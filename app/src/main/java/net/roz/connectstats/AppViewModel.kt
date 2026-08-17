@@ -3,10 +3,14 @@ package net.roz.connectstats
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.roz.connectstats.data.prefs.AppSettings
 import net.roz.connectstats.data.prefs.SettingsStore
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
@@ -15,6 +19,7 @@ import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityDetail
 import net.roz.connectstats.domain.model.ActivityType
+import net.roz.connectstats.domain.model.GpsTrack
 import java.util.Calendar
 
 data class UiState(
@@ -31,6 +36,8 @@ data class UiState(
     val calYear: Int = Calendar.getInstance().get(Calendar.YEAR),
     val calMonth: Int = Calendar.getInstance().get(Calendar.MONTH),
     val calDay: Int? = Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
+    val gpsTracks: List<GpsTrack> = emptyList(),
+    val gpsTracksLoading: Boolean = false,
 )
 
 class AppViewModel(
@@ -40,6 +47,7 @@ class AppViewModel(
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
+    private var gpsLoadJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -81,6 +89,25 @@ class AppViewModel(
 
     fun closeDetail() {
         _state.update { it.copy(selected = null) }
+    }
+
+    fun loadGpsTracks(activityIds: List<String>) {
+        gpsLoadJob?.cancel()
+        gpsLoadJob = viewModelScope.launch {
+            if (activityIds.isEmpty()) {
+                _state.update { it.copy(gpsTracks = emptyList(), gpsTracksLoading = false) }
+                return@launch
+            }
+            _state.update { it.copy(gpsTracksLoading = true) }
+            try {
+                val tracks = withContext(Dispatchers.IO) { repo.gpsTracks(activityIds) }
+                _state.update { it.copy(gpsTracks = tracks, gpsTracksLoading = false) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _state.update { it.copy(gpsTracks = emptyList(), gpsTracksLoading = false) }
+            }
+        }
     }
 
     fun refresh() {

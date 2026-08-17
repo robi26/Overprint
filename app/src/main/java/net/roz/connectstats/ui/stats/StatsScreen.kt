@@ -12,7 +12,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +24,8 @@ import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityType
 import net.roz.connectstats.domain.stats.StatsEngine
 import net.roz.connectstats.domain.stats.TrendPoint
+import net.roz.connectstats.ui.common.SportAndYearFilters
+import net.roz.connectstats.ui.common.filterBySportAndYear
 import net.roz.connectstats.ui.components.BarChart
 import net.roz.connectstats.ui.components.ChartCard
 import net.roz.connectstats.ui.components.HistogramChart
@@ -43,15 +44,7 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     val byType = remember(activities, type) {
         if (type == null) activities else activities.filter { it.type == type }
     }
-    val years = remember(byType) {
-        byType.map { activityYear(it.startTimeMillis) }.toSet().sortedDescending()
-    }
-    LaunchedEffect(years, year) {
-        if (year != null && year !in years) year = null
-    }
-    val filtered = remember(byType, year) {
-        if (year == null) byType else byType.filter { activityYear(it.startTimeMillis) == year }
-    }
+    val filtered = remember(activities, type, year) { filterBySportAndYear(activities, type, year) }
     val referenceNow = remember(year) { referenceTimeForYear(year) }
     val periods = remember(filtered, referenceNow) { StatsEngine.periodSummaries(filtered, referenceNow) }
     val weekly = remember(filtered, fmt.metric, referenceNow) {
@@ -91,18 +84,13 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Statistics", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = type == null, onClick = { type = null }, label = { Text("All") })
-            ActivityType.entries.forEach { t ->
-                FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t.displayName) })
-            }
-        }
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = year == null, onClick = { year = null }, label = { Text("All years") })
-            years.forEach { y ->
-                FilterChip(selected = year == y, onClick = { year = y }, label = { Text(y.toString()) })
-            }
-        }
+        SportAndYearFilters(
+            activities = byType,
+            type = type,
+            year = year,
+            onType = { type = it },
+            onYear = { year = it },
+        )
         periods.forEach { p ->
             ChartCard(
                 title = p.label,
@@ -149,12 +137,6 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
             ScatterChart(scatter)
         }
     }
-}
-
-private fun activityYear(millis: Long): Int {
-    val cal = Calendar.getInstance()
-    cal.timeInMillis = millis
-    return cal.get(Calendar.YEAR)
 }
 
 private fun referenceTimeForYear(year: Int?): Long {

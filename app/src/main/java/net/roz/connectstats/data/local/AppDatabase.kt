@@ -112,10 +112,27 @@ interface ActivityDao {
     suspend fun count(): Int
 }
 
+data class GpsSample(
+    val activityId: String,
+    val latitude: Double?,
+    val longitude: Double?,
+)
+
 @Dao
 interface TrackDao {
     @Query("SELECT * FROM track_points WHERE activityId = :id ORDER BY elapsedSeconds ASC")
     suspend fun forActivity(id: String): List<TrackPointEntity>
+
+    @Query(
+        """
+        SELECT activityId, latitude, longitude FROM track_points
+        WHERE activityId IN (:activityIds)
+          AND latitude IS NOT NULL AND longitude IS NOT NULL
+          AND (elapsedSeconds < 1.0 OR CAST(elapsedSeconds AS INTEGER) % :stride = 0)
+        ORDER BY activityId ASC, elapsedSeconds ASC
+        """,
+    )
+    suspend fun gpsSamplesFor(activityIds: List<String>, stride: Int): List<GpsSample>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(points: List<TrackPointEntity>)

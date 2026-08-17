@@ -16,8 +16,11 @@ import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityDetail
 import net.roz.connectstats.domain.model.ActivityType
 import net.roz.connectstats.domain.model.DataSource
+import net.roz.connectstats.domain.model.GeoPoint
+import net.roz.connectstats.domain.model.GpsTrack
 import net.roz.connectstats.domain.model.Lap
 import net.roz.connectstats.domain.model.TrackPoint
+import kotlin.math.min
 
 class ActivityRepository(
     private val db: AppDatabase,
@@ -32,6 +35,35 @@ class ActivityRepository(
         val track = db.tracks().forActivity(id).map { it.toModel() }
         val laps = db.laps().forActivity(id).map { it.toModel() }
         return ActivityDetail(entity.toModel(), track, laps)
+    }
+
+    suspend fun gpsTracks(
+        activityIds: Collection<String>,
+        maxPointsPerTrack: Int = 160,
+    ): List<GpsTrack> {
+        if (activityIds.isEmpty()) return emptyList()
+        val grouped = LinkedHashMap<String, MutableList<GeoPoint>>()
+        for (chunk in activityIds.distinct().chunked(80)) {
+            val samples = db.tracks().gpsSamplesFor(chunk, stride = 12)
+            for (sample in samples) {
+                val lat = sample.latitude ?: continue
+                val lon = sample.longitude ?: continue
+                grouped.getOrPut(sample.activityId) { mutableListOf() }
+                    .add(GeoPoint(lat, lon))
+            }
+        }
+        return grouped.mapNotNull { (id, pts) ->
+            val slim = downsample(pts, maxPointsPerTrack)
+            if (slim.size < 2) return@mapNotNull null
+            GpsTrack(
+                activityId = id,
+                points = slim,
+                minLat = slim.minOf { it.lat },
+                maxLat = slim.maxOf { it.lat },
+                minLon = slim.minOf { it.lon },
+                maxLon = slim.maxOf { it.lon },
+            )
+        }
     }
 
     suspend fun search(query: String): List<Activity> =
@@ -141,6 +173,13 @@ class ActivityRepository(
         db.laps().deleteFor(id)
         db.activities().delete(id)
     }
+}
+
+private fun downsample(points: List<GeoPoint>, maxPoints: Int): List<GeoPoint> {
+    if (points.size <= maxPoints) return points
+    val last = points.lastIndex
+    val step = last.toFloat() / (maxPoints - 1)
+    return List(maxPoints) { i -> points[min(last, (i * step).toInt())] }
 }
 
 private fun ActivityEntity.toModel() = Activity(

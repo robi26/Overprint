@@ -15,7 +15,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Insights
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,6 +36,8 @@ import androidx.navigation.compose.rememberNavController
 import net.roz.connectstats.ui.activities.ActivitiesScreen
 import net.roz.connectstats.ui.calendar.CalendarScreen
 import net.roz.connectstats.ui.detail.ActivityDetailScreen
+import net.roz.connectstats.ui.heatmap.HeatmapScreen
+import net.roz.connectstats.ui.more.MoreScreen
 import net.roz.connectstats.ui.settings.SettingsScreen
 import net.roz.connectstats.ui.stats.StatsScreen
 import net.roz.connectstats.ui.theme.ConnectStatsTheme
@@ -85,18 +87,22 @@ private fun ConnectStatsNav(
         "activities" to "Activities",
         "calendar" to "Calendar",
         "stats" to "Statistics",
+        "more" to "More",
+        "heatmap" to "Heatmap",
         "settings" to "Settings",
         "detail" to (state.selected?.activity?.name ?: "Activity"),
     )
+    val moreRoutes = setOf("more", "heatmap", "settings")
+    val showBack = route == "detail" || route == "heatmap" || route == "settings"
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(titles[route] ?: "ConnectStats") },
                 navigationIcon = {
-                    if (route == "detail") {
+                    if (showBack) {
                         IconButton(onClick = {
-                            viewModel.closeDetail()
+                            if (route == "detail") viewModel.closeDetail()
                             nav.popBackStack()
                         }) {
                             Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
@@ -127,10 +133,10 @@ private fun ConnectStatsNav(
                         label = { Text("Stats") },
                     )
                     NavigationBarItem(
-                        selected = route == "settings",
-                        onClick = { nav.navigate("settings") { launchSingleTop = true } },
-                        icon = { Icon(Icons.Outlined.Settings, contentDescription = null) },
-                        label = { Text("Settings") },
+                        selected = route in moreRoutes,
+                        onClick = { nav.navigate("more") { launchSingleTop = true } },
+                        icon = { Icon(Icons.Outlined.MoreHoriz, contentDescription = null) },
+                        label = { Text("More") },
                     )
                 }
             }
@@ -170,6 +176,25 @@ private fun ConnectStatsNav(
             }
             composable("stats") {
                 StatsScreen(state.activities, state.fmt)
+            }
+            composable("more") {
+                MoreScreen(
+                    onHeatmap = { nav.navigate("heatmap") },
+                    onSettings = { nav.navigate("settings") },
+                )
+            }
+            composable("heatmap") {
+                HeatmapScreen(
+                    activities = state.activities,
+                    tracks = state.gpsTracks,
+                    loading = state.gpsTracksLoading,
+                    fmt = state.fmt,
+                    onLoadTracks = viewModel::loadGpsTracks,
+                    onOpen = {
+                        viewModel.open(it)
+                        nav.navigate("detail")
+                    },
+                )
             }
             composable("settings") {
                 SettingsScreen(
