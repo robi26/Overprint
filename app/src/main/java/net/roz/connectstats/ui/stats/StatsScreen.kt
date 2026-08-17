@@ -5,15 +5,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,22 +24,42 @@ import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityType
 import net.roz.connectstats.domain.stats.StatsEngine
+import net.roz.connectstats.domain.stats.TrendPoint
 import net.roz.connectstats.ui.components.BarChart
+import net.roz.connectstats.ui.components.ChartCard
 import net.roz.connectstats.ui.components.HistogramChart
 import net.roz.connectstats.ui.components.ScatterChart
+import java.util.Calendar
+import java.util.Locale
+import kotlin.math.roundToInt
 
 private enum class HistField { DISTANCE, DURATION, HR, PACE, POWER }
 
 @Composable
 fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     var type by remember { mutableStateOf<ActivityType?>(null) }
+    var year by remember { mutableStateOf<Int?>(null) }
     var hist by remember { mutableStateOf(HistField.DISTANCE) }
-    val filtered = remember(activities, type) {
+    val byType = remember(activities, type) {
         if (type == null) activities else activities.filter { it.type == type }
     }
-    val periods = remember(filtered) { StatsEngine.periodSummaries(filtered) }
-    val weekly = remember(filtered) { StatsEngine.weeklyHistory(filtered) }
-    val monthly = remember(filtered) { StatsEngine.monthlyHistory(filtered) }
+    val years = remember(byType) {
+        byType.map { activityYear(it.startTimeMillis) }.toSet().sortedDescending()
+    }
+    LaunchedEffect(years, year) {
+        if (year != null && year !in years) year = null
+    }
+    val filtered = remember(byType, year) {
+        if (year == null) byType else byType.filter { activityYear(it.startTimeMillis) == year }
+    }
+    val referenceNow = remember(year) { referenceTimeForYear(year) }
+    val periods = remember(filtered, referenceNow) { StatsEngine.periodSummaries(filtered, referenceNow) }
+    val weekly = remember(filtered, fmt.metric, referenceNow) {
+        StatsEngine.weeklyHistory(filtered, now = referenceNow).map { it.copy(value = fmt.kmToChartUnit(it.value)) }
+    }
+    val monthly = remember(filtered, fmt.metric, referenceNow) {
+        StatsEngine.monthlyHistory(filtered, now = referenceNow).map { it.copy(value = fmt.kmToChartUnit(it.value)) }
+    }
     val histValues = remember(filtered, hist) {
         filtered.mapNotNull {
             when (hist) {
@@ -65,6 +84,7 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     val scatter = remember(filtered) {
         StatsEngine.scatter(filtered, x = { it.avgHeartRate }, y = { it.paceSecPerKm })
     }
+    val unit = fmt.distanceUnit()
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -72,37 +92,95 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     ) {
         Text("Statistics", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AssistChip(onClick = { type = null }, label = { Text("All") })
+            FilterChip(selected = type == null, onClick = { type = null }, label = { Text("All") })
             ActivityType.entries.forEach { t ->
-                AssistChip(onClick = { type = t }, label = { Text(t.displayName) })
+                FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t.displayName) })
+            }
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = year == null, onClick = { year = null }, label = { Text("All years") })
+            years.forEach { y ->
+                FilterChip(selected = year == y, onClick = { year = y }, label = { Text(y.toString()) })
             }
         }
         periods.forEach { p ->
-            Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-                Text(p.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text("${p.count} activities · ${fmt.distance(p.distanceMeters)} · ${fmt.duration(p.durationSeconds)} · ${fmt.elevation(p.elevationGain)}")
-                if (p.byType.isNotEmpty()) {
-                    Text(
-                        p.byType.entries.joinToString("  ") { "${it.key.displayName} ${it.value.count}" },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            ChartCard(
+                title = p.label,
+                headline = fmt.distance(p.distanceMeters),
+                subtitle = buildString {
+                    append("${p.count} activities · ${fmt.duration(p.durationSeconds)} · ${fmt.elevation(p.elevationGain)}")
+                    if (p.byType.isNotEmpty()) {
+                        append("\n")
+                        append(p.byType.entries.joinToString("  ") { "${it.key.displayName} ${it.value.count}" })
+                    }
+                },
+            )
+        }
+        ChartCard(
+            title = "Weekly distance",
+            headline = "${formatLatest(weekly)} $unit",
+            subtitle = trendSubtitle(weekly, "week"),
+        ) {
+            BarChart(weekly, yFormatter = { String.format(Locale.US, "%.0f", it) })
+        }
+        ChartCard(
+            title = "Monthly distance",
+            headline = "${formatLatest(monthly)} $unit",
+            subtitle = trendSubtitle(monthly, "month"),
+        ) {
+            BarChart(monthly, yFormatter = { String.format(Locale.US, "%.0f", it) })
+        }
+        ChartCard(title = "Histogram") {
+            Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HistField.entries.forEach { f ->
+                    FilterChip(
+                        selected = hist == f,
+                        onClick = { hist = f },
+                        label = { Text(f.name.lowercase()) },
                     )
                 }
             }
+            HistogramChart(bins)
         }
-        Text("Weekly distance", style = MaterialTheme.typography.titleMedium)
-        BarChart(weekly, Modifier.fillMaxWidth().height(160.dp))
-        Text("Monthly distance", style = MaterialTheme.typography.titleMedium)
-        BarChart(monthly, Modifier.fillMaxWidth().height(160.dp))
-        Text("Histogram", style = MaterialTheme.typography.titleMedium)
-        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            HistField.entries.forEach { f ->
-                AssistChip(onClick = { hist = f }, label = { Text(f.name.lowercase()) })
-            }
+        ChartCard(
+            title = "Heart rate vs pace",
+            subtitle = "Each point is an activity for the selected sport.",
+        ) {
+            ScatterChart(scatter)
         }
-        HistogramChart(bins, Modifier.fillMaxWidth().height(140.dp))
-        Text("Scatter: heart rate vs pace", style = MaterialTheme.typography.titleMedium)
-        ScatterChart(scatter, Modifier.fillMaxWidth().height(180.dp))
-        Text("Tap a field in the iOS app to open full history — here the histogram and scatter cover the same idea for the selected sport.")
     }
+}
+
+private fun activityYear(millis: Long): Int {
+    val cal = Calendar.getInstance()
+    cal.timeInMillis = millis
+    return cal.get(Calendar.YEAR)
+}
+
+private fun referenceTimeForYear(year: Int?): Long {
+    if (year == null) return System.currentTimeMillis()
+    val cal = Calendar.getInstance()
+    if (year >= cal.get(Calendar.YEAR)) return System.currentTimeMillis()
+    cal.set(Calendar.YEAR, year)
+    cal.set(Calendar.MONTH, Calendar.DECEMBER)
+    cal.set(Calendar.DAY_OF_MONTH, 31)
+    cal.set(Calendar.HOUR_OF_DAY, 23)
+    cal.set(Calendar.MINUTE, 59)
+    cal.set(Calendar.SECOND, 59)
+    cal.set(Calendar.MILLISECOND, 999)
+    return cal.timeInMillis
+}
+
+private fun formatLatest(points: List<TrendPoint>): String {
+    val last = points.lastOrNull()?.value ?: 0.0
+    return String.format(Locale.US, "%.1f", last)
+}
+
+private fun trendSubtitle(points: List<TrendPoint>, period: String): String {
+    val last = points.lastOrNull()?.value ?: return "No data yet"
+    val prev = points.getOrNull(points.lastIndex - 1)?.value ?: return "Latest $period"
+    if (prev < 0.05) return "Latest $period"
+    val pct = ((last - prev) / prev * 100.0).roundToInt()
+    val arrow = if (pct >= 0) "▲" else "▼"
+    return "$arrow ${kotlin.math.abs(pct)}% vs previous $period"
 }

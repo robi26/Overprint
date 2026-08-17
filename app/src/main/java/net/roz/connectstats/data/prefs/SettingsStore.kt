@@ -20,7 +20,14 @@ data class AppSettings(
     val garminPassword: String = "",
     val maxHeartRate: Double = 190.0,
     val ftpWatts: Double = 250.0,
-)
+    val themeMode: String = THEME_SYSTEM,
+) {
+    companion object {
+        const val THEME_SYSTEM = "system"
+        const val THEME_LIGHT = "light"
+        const val THEME_DARK = "dark"
+    }
+}
 
 class SettingsStore(private val context: Context) {
     val settings: Flow<AppSettings> = context.dataStore.data.map { it.toSettings() }
@@ -43,6 +50,7 @@ class SettingsStore(private val context: Context) {
             prefs.remove(stringPreferencesKey("strava_exp"))
             prefs[Keys.MAX_HR] = next.maxHeartRate
             prefs[Keys.FTP] = next.ftpWatts
+            prefs[Keys.THEME] = next.themeMode
         }
     }
 
@@ -54,6 +62,7 @@ class SettingsStore(private val context: Context) {
         garminPassword = this[Keys.GARMIN_PASSWORD] ?: "",
         maxHeartRate = this[Keys.MAX_HR] ?: 190.0,
         ftpWatts = this[Keys.FTP] ?: 250.0,
+        themeMode = this[Keys.THEME] ?: AppSettings.THEME_SYSTEM,
     )
 
     private object Keys {
@@ -64,5 +73,6 @@ class SettingsStore(private val context: Context) {
         val GARMIN_PASSWORD = stringPreferencesKey("garmin_password")
         val MAX_HR = doublePreferencesKey("max_hr")
         val FTP = doublePreferencesKey("ftp")
+        val THEME = stringPreferencesKey("theme_mode")
     }
 }

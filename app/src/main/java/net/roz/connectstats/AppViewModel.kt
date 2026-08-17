@@ -148,6 +148,10 @@ class AppViewModel(
         viewModelScope.launch { settingsStore.update { it.copy(metric = metric) } }
     }
 
+    fun setThemeMode(mode: String) {
+        viewModelScope.launch { settingsStore.update { it.copy(themeMode = mode) } }
+    }
+
     fun setGarminUsername(value: String) {
         viewModelScope.launch {
             settingsStore.update {

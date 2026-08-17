@@ -8,7 +8,9 @@ import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-class Formatters(private val metric: Boolean = true) {
+class Formatters(val metric: Boolean = true) {
+
+    fun kmToChartUnit(km: Double): Double = if (metric) km else km / 1.609344
 
     fun distance(meters: Double): String {
         return if (metric) {

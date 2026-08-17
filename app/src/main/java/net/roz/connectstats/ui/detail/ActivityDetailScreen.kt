@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -31,6 +31,7 @@ import net.roz.connectstats.domain.model.ActivityDetail
 import net.roz.connectstats.domain.model.ChartMetric
 import net.roz.connectstats.domain.model.MapMetric
 import net.roz.connectstats.domain.stats.StatsEngine
+import net.roz.connectstats.ui.components.ChartCard
 import net.roz.connectstats.ui.components.GradientTrackMap
 import net.roz.connectstats.ui.components.TrackChart
 
@@ -79,23 +80,33 @@ fun ActivityDetailScreen(
         )
 
         if (detail.track.any { it.latitude != null }) {
-            Text("Map", style = MaterialTheme.typography.titleMedium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                MapMetric.entries.forEach { m ->
-                    AssistChip(onClick = { mapMetric = m }, label = { Text(m.name.lowercase().replace('_', ' ')) })
+            ChartCard(title = "Map") {
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MapMetric.entries.forEach { m ->
+                        FilterChip(
+                            selected = mapMetric == m,
+                            onClick = { mapMetric = m },
+                            label = { Text(m.name.lowercase().replace('_', ' ')) },
+                        )
+                    }
                 }
+                GradientTrackMap(detail.track, mapMetric)
             }
-            GradientTrackMap(detail.track, mapMetric)
         }
 
         if (detail.track.isNotEmpty()) {
-            Text("Graphs", style = MaterialTheme.typography.titleMedium)
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ChartMetric.entries.forEach { m ->
-                    AssistChip(onClick = { chartMetric = m }, label = { Text(m.name.lowercase().replace('_', ' ')) })
+            ChartCard(title = "Graphs") {
+                Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ChartMetric.entries.forEach { m ->
+                        FilterChip(
+                            selected = chartMetric == m,
+                            onClick = { chartMetric = m },
+                            label = { Text(m.name.lowercase().replace('_', ' ')) },
+                        )
+                    }
                 }
+                TrackChart(detail.track, chartMetric)
             }
-            TrackChart(detail.track, chartMetric)
         }
 
         if (detail.laps.isNotEmpty()) {

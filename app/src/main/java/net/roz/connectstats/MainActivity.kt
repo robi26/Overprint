@@ -7,7 +7,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
+import androidx.compose.runtime.SideEffect
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
@@ -37,15 +39,23 @@ import net.roz.connectstats.ui.detail.ActivityDetailScreen
 import net.roz.connectstats.ui.settings.SettingsScreen
 import net.roz.connectstats.ui.stats.StatsScreen
 import net.roz.connectstats.ui.theme.ConnectStatsTheme
+import net.roz.connectstats.ui.theme.DarkWindowArgb
+import net.roz.connectstats.ui.theme.LightWindowArgb
+import net.roz.connectstats.ui.theme.resolvedDarkTheme
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels { AppViewModel.factory() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.setBackgroundDrawable(ColorDrawable(0xFF0B1B33.toInt()))
+        window.setBackgroundDrawable(ColorDrawable(DarkWindowArgb))
         setContent {
-            ConnectStatsTheme {
+            val state by viewModel.state.collectAsStateWithLifecycle()
+            val dark = state.settings.resolvedDarkTheme(isSystemInDarkTheme())
+            SideEffect {
+                window.setBackgroundDrawable(ColorDrawable(if (dark) DarkWindowArgb else LightWindowArgb))
+            }
+            ConnectStatsTheme(darkTheme = dark) {
                 ConnectStatsNav(viewModel) { bytes, name -> viewModel.importFile(bytes, name) }
             }
         }
@@ -167,6 +177,7 @@ private fun ConnectStatsNav(
                     status = state.status,
                     garminSync = state.garminSync,
                     onMetric = viewModel::setMetric,
+                    onThemeMode = viewModel::setThemeMode,
                     onGarminUsername = viewModel::setGarminUsername,
                     onGarminPassword = viewModel::setGarminPassword,
                     onImport = { picker.launch(arrayOf("*/*")) },

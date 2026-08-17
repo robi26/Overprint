@@ -10,6 +10,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -32,6 +33,7 @@ fun SettingsScreen(
     status: String?,
     garminSync: GarminSyncProgress,
     onMetric: (Boolean) -> Unit,
+    onThemeMode: (String) -> Unit,
     onGarminUsername: (String) -> Unit,
     onGarminPassword: (String) -> Unit,
     onImport: () -> Unit,
@@ -54,6 +56,26 @@ fun SettingsScreen(
                 Text("km, pace /km, metres")
             }
             Switch(checked = settings.metric, onCheckedChange = onMetric)
+        }
+
+        Text("Appearance", style = MaterialTheme.typography.titleMedium)
+        Text("Charts and screens follow this choice. System matches your phone setting.")
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(
+                selected = settings.themeMode == AppSettings.THEME_SYSTEM,
+                onClick = { onThemeMode(AppSettings.THEME_SYSTEM) },
+                label = { Text("System") },
+            )
+            FilterChip(
+                selected = settings.themeMode == AppSettings.THEME_LIGHT,
+                onClick = { onThemeMode(AppSettings.THEME_LIGHT) },
+                label = { Text("Light") },
+            )
+            FilterChip(
+                selected = settings.themeMode == AppSettings.THEME_DARK,
+                onClick = { onThemeMode(AppSettings.THEME_DARK) },
+                label = { Text("Dark") },
+            )
         }
 
         Text("Garmin Connect", style = MaterialTheme.typography.titleMedium)
