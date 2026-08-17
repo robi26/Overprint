@@ -66,7 +66,8 @@ class GarminClient {
     private val htmlClient: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(cookieJar)
         .followRedirects(true)
-        .followSslRedirects(true)
+        // Never let a redirect downgrade an authenticated request to http://.
+        .followSslRedirects(false)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -76,6 +77,14 @@ class GarminClient {
     private var accessToken: String = ""
     var lastListDiagnostic: String = ""
         private set
+
+    /** Bearer token issued by [login], to be stored encrypted so the password can stay unused. */
+    val sessionToken: String get() = accessToken
+
+    /** Reuse a previously issued bearer token instead of replaying the password. */
+    fun resumeSession(token: String) {
+        accessToken = token
+    }
 
     suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
         if (username.isBlank() || password.isBlank()) {
