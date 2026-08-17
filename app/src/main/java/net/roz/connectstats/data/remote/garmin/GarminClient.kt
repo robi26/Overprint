@@ -40,6 +40,9 @@ class GarminApiException(
     val requestUrl: String,
     detail: String,
 ) : RuntimeException(userMessage(httpCode, requestUrl, detail)) {
+    /** Garmin rejected the credentials, as opposed to being unreachable or broken. */
+    val isAuthFailure: Boolean get() = httpCode == 401 || httpCode == 403
+
     companion object {
         private fun userMessage(code: Int, url: String, detail: String): String = when (code) {
             401, 403 -> "Garmin session expired or access denied (HTTP $code). Sign in again."
@@ -142,10 +145,15 @@ class GarminClient {
 
     private fun firstNonEmptyList(limit: Int): List<Activity> {
         val attempts = mutableListOf<String>()
+        var authFailure: GarminApiException? = null
+        // Any outcome other than a straight auth rejection - a reachable endpoint, a timeout,
+        // a 5xx - means the session cannot be blamed, so the aggregate error is thrown instead.
+        var sawNonAuthOutcome = false
         for (template in LIST_URLS) {
             val url = listUrl(template, 0, limit)
             try {
                 val body = getJson(url)
+                sawNonAuthOutcome = true
                 val parsed = runCatching { parseActivityList(body) }
                 if (parsed.isFailure) {
                     attempts += "$url -> not JSON (${parsed.exceptionOrNull()?.message})"
@@ -160,11 +168,19 @@ class GarminClient {
                 }
                 attempts += "$url -> JSON with 0 activities (${listDiagnostic(body, 0)})"
             } catch (err: Exception) {
+                if (err is GarminApiException && err.isAuthFailure) {
+                    if (authFailure == null) authFailure = err
+                } else {
+                    sawNonAuthOutcome = true
+                }
                 attempts += "$url -> ${err.message}"
                 Log.i(TAG, "list URL failed $url: ${err.message}")
             }
         }
         lastListDiagnostic = attempts.joinToString(" | ")
+        // Surface an auth rejection as itself so callers can tell a dead session from a dead
+        // endpoint; only the former justifies discarding a stored token.
+        authFailure?.takeIf { !sawNonAuthOutcome }?.let { throw it }
         error("Garmin activity list failed. ${attempts.joinToString(" ")}")
     }
 

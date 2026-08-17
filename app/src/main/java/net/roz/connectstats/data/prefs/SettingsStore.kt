@@ -59,13 +59,22 @@ class SettingsStore(private val context: Context) {
 
     suspend fun update(transform: (AppSettings) -> AppSettings) {
         context.dataStore.edit { prefs ->
-            val next = transform(prefs.toSettings())
+            val current = prefs.toSettings()
+            val next = transform(current)
             prefs[Keys.METRIC] = next.metric
             prefs[Keys.DEMO] = next.demoLoaded
             prefs[Keys.GARMIN] = next.garminEnabled
             prefs[Keys.GARMIN_USER] = next.garminUsername
-            prefs.putSecret(Keys.GARMIN_PASSWORD, next.garminPassword)
-            prefs.putSecret(Keys.GARMIN_TOKEN, next.garminToken)
+            // Touch a secret only when its plaintext actually changed. Re-encrypting on every
+            // unrelated write (a theme change, an FTP edit) would let a single transient
+            // Keystore failure erase the stored credentials - and toSettings() reports a failed
+            // decrypt as blank, so that blank would be written straight back over the ciphertext.
+            if (next.garminPassword != current.garminPassword) {
+                prefs.putSecret(Keys.GARMIN_PASSWORD, next.garminPassword)
+            }
+            if (next.garminToken != current.garminToken) {
+                prefs.putSecret(Keys.GARMIN_TOKEN, next.garminToken)
+            }
             prefs.remove(stringPreferencesKey("garmin_cookies"))
             // Plaintext secrets written by earlier builds, in case the migration was skipped.
             prefs.remove(stringPreferencesKey("garmin_password"))
@@ -82,15 +91,17 @@ class SettingsStore(private val context: Context) {
         }
     }
 
-    /** Wipes the Garmin email, password and access token from disk. */
+    /**
+     * Wipes the Garmin email, password and access token from disk. The secret keys are removed
+     * outright rather than routed through [update]: a ciphertext that can no longer be decrypted
+     * reads as blank, so the changed-only rule there would leave it sitting on disk forever.
+     */
     suspend fun clearGarminCredentials() {
-        update {
-            it.copy(
-                garminEnabled = false,
-                garminUsername = "",
-                garminPassword = "",
-                garminToken = "",
-            )
+        context.dataStore.edit { prefs ->
+            prefs[Keys.GARMIN] = false
+            prefs[Keys.GARMIN_USER] = ""
+            prefs.remove(Keys.GARMIN_PASSWORD)
+            prefs.remove(Keys.GARMIN_TOKEN)
         }
     }
 

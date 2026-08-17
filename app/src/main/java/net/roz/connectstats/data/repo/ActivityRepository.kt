@@ -11,6 +11,7 @@ import net.roz.connectstats.data.local.TrackPointEntity
 import net.roz.connectstats.data.parse.ActivityFileParser
 import net.roz.connectstats.data.prefs.AppSettings
 import net.roz.connectstats.data.prefs.SettingsStore
+import net.roz.connectstats.data.remote.garmin.GarminApiException
 import net.roz.connectstats.data.remote.garmin.GarminClient
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
 import net.roz.connectstats.data.sample.SampleData
@@ -167,15 +168,18 @@ class ActivityRepository(
         if (prefs.garminToken.isNotBlank()) {
             progress(GarminSyncProgress(running = true, message = "Resuming Garmin session…"))
             client.resumeSession(prefs.garminToken)
-            val resumed = try {
+            val rejected = try {
                 client.listActivities(start = 0, limit = 1)
-                true
+                false
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                false
+            } catch (e: GarminApiException) {
+                // Only an auth rejection means the token is spent. Being offline, a timeout or a
+                // Garmin 5xx must not cost the user their session and force a password replay.
+                if (!e.isAuthFailure) throw e
+                true
             }
-            if (resumed) return
+            if (!rejected) return
             client.resumeSession("")
             settings.update { it.copy(garminToken = "") }
         }
