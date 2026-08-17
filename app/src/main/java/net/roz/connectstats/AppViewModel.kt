@@ -1,0 +1,203 @@
+package net.roz.connectstats
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import net.roz.connectstats.data.prefs.AppSettings
+import net.roz.connectstats.data.prefs.SettingsStore
+import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
+import net.roz.connectstats.data.repo.ActivityRepository
+import net.roz.connectstats.domain.format.Formatters
+import net.roz.connectstats.domain.model.Activity
+import net.roz.connectstats.domain.model.ActivityDetail
+import net.roz.connectstats.domain.model.ActivityType
+import java.util.Calendar
+
+data class UiState(
+    val activities: List<Activity> = emptyList(),
+    val filtered: List<Activity> = emptyList(),
+    val query: String = "",
+    val typeFilter: ActivityType? = null,
+    val settings: AppSettings = AppSettings(),
+    val fmt: Formatters = Formatters(true),
+    val refreshing: Boolean = false,
+    val garminSync: GarminSyncProgress = GarminSyncProgress(),
+    val status: String? = null,
+    val selected: ActivityDetail? = null,
+    val calYear: Int = Calendar.getInstance().get(Calendar.YEAR),
+    val calMonth: Int = Calendar.getInstance().get(Calendar.MONTH),
+    val calDay: Int? = Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
+)
+
+class AppViewModel(
+    private val repo: ActivityRepository,
+    private val settingsStore: SettingsStore,
+) : ViewModel() {
+
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state
+
+    init {
+        viewModelScope.launch {
+            runCatching { repo.loadDemoIfEmpty() }
+        }
+        viewModelScope.launch {
+            repo.activities.collect { acts ->
+                _state.update { it.copy(activities = acts).withFilter() }
+            }
+        }
+        viewModelScope.launch {
+            settingsStore.settings.collect { s ->
+                _state.update { it.copy(settings = s, fmt = Formatters(s.metric)) }
+            }
+        }
+    }
+
+    fun setQuery(value: String) {
+        _state.update { it.copy(query = value).withFilter() }
+    }
+
+    fun setType(type: ActivityType?) {
+        _state.update { it.copy(typeFilter = type).withFilter() }
+    }
+
+    fun setMonth(year: Int, month: Int) {
+        _state.update { it.copy(calYear = year, calMonth = month) }
+    }
+
+    fun setDay(day: Int) {
+        _state.update { it.copy(calDay = day) }
+    }
+
+    fun open(activity: Activity) {
+        viewModelScope.launch {
+            _state.update { it.copy(selected = repo.get(activity.id)) }
+        }
+    }
+
+    fun closeDetail() {
+        _state.update { it.copy(selected = null) }
+    }
+
+    fun refresh() {
+        viewModelScope.launch { runGarminSync() }
+    }
+
+    fun syncGarmin() {
+        viewModelScope.launch { runGarminSync() }
+    }
+
+    private suspend fun runGarminSync() {
+        if (_state.value.garminSync.running) return
+        val settings = _state.value.settings
+        if (settings.garminUsername.isBlank() || settings.garminPassword.isBlank()) {
+            _state.update {
+                it.copy(
+                    garminSync = GarminSyncProgress(
+                        error = "Enter your Garmin email and password in Settings.",
+                    ),
+                    status = "Enter your Garmin email and password in Settings.",
+                )
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                refreshing = true,
+                status = null,
+                garminSync = GarminSyncProgress(running = true, message = "Starting Garmin sync…"),
+            )
+        }
+        runCatching {
+            repo.syncGarmin { update ->
+                _state.update { it.copy(garminSync = update, status = update.message) }
+            }
+        }.onFailure { err ->
+            val message = err.message ?: "Garmin sync failed"
+            _state.update {
+                it.copy(
+                    garminSync = it.garminSync.copy(running = false, error = message),
+                    status = message,
+                )
+            }
+        }
+        _state.update { it.copy(refreshing = false, garminSync = it.garminSync.copy(running = false)) }
+    }
+
+    fun importFile(bytes: ByteArray, name: String) {
+        viewModelScope.launch {
+            runCatching {
+                val act = repo.importFile(bytes, name)
+                _state.update { it.copy(status = "Imported ${act.name}") }
+            }.onFailure { err -> _state.update { it.copy(status = "Import failed: ${err.message}") } }
+        }
+    }
+
+    fun loadDemo() {
+        viewModelScope.launch {
+            repo.reloadDemo()
+            _state.update { it.copy(status = "Demo activities loaded") }
+        }
+    }
+
+    fun setMetric(metric: Boolean) {
+        viewModelScope.launch { settingsStore.update { it.copy(metric = metric) } }
+    }
+
+    fun setGarminUsername(value: String) {
+        viewModelScope.launch {
+            settingsStore.update {
+                it.copy(
+                    garminUsername = value.trim(),
+                    garminEnabled = value.isNotBlank() && it.garminPassword.isNotBlank(),
+                )
+            }
+        }
+    }
+
+    fun setGarminPassword(value: String) {
+        viewModelScope.launch {
+            settingsStore.update {
+                it.copy(
+                    garminPassword = value,
+                    garminEnabled = it.garminUsername.isNotBlank() && value.isNotBlank(),
+                )
+            }
+        }
+    }
+
+    fun setMaxHr(raw: String) {
+        val v = raw.toDoubleOrNull() ?: return
+        viewModelScope.launch { settingsStore.update { it.copy(maxHeartRate = v) } }
+    }
+
+    fun setFtp(raw: String) {
+        val v = raw.toDoubleOrNull() ?: return
+        viewModelScope.launch { settingsStore.update { it.copy(ftpWatts = v) } }
+    }
+
+    private fun UiState.withFilter(): UiState {
+        val filtered = activities.filter { a ->
+            (typeFilter == null || a.type == typeFilter) &&
+                (query.isBlank() ||
+                    a.name.contains(query, true) ||
+                    a.location.orEmpty().contains(query, true) ||
+                    a.type.displayName.contains(query, true))
+        }
+        return copy(filtered = filtered)
+    }
+
+    companion object {
+        fun factory(): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                val app = ConnectStatsApp.instance
+                return AppViewModel(app.repository, app.settings) as T
+            }
+        }
+    }
+}
