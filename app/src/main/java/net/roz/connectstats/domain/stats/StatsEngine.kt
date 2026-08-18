@@ -399,3 +399,71 @@ object StatsEngine {
 
     val defaultDistances = listOf(400.0, 1000.0, 1609.34, 5000.0, 10000.0, 21097.5)
 }
+
+fun withNormalizedElapsed(track: List<TrackPoint>): List<TrackPoint> {
+    if (track.size < 2) return track
+    val elapsedSpan = track.maxOf { it.elapsedSeconds } - track.minOf { it.elapsedSeconds }
+    if (elapsedSpan >= 1e-3) return track
+    val t0 = track.minOf { it.timestampMillis }
+    if (track.maxOf { it.timestampMillis } - t0 < 1000L) return track
+    return track.map { it.copy(elapsedSeconds = (it.timestampMillis - t0) / 1000.0) }
+}
+
+fun sanitizeFitUnits(track: List<TrackPoint>): List<TrackPoint> {
+    if (track.isEmpty()) return track
+    val speeds = track.mapNotNull { it.speedMps?.takeIf { s -> s.isFinite() } }
+    val speedIsMmPerSec = speeds.size >= 2 && speeds.count { it > 80.0 } * 2 >= speeds.size
+    val alts = track.mapNotNull { it.altitudeMeters?.takeIf { a -> a.isFinite() } }
+    val altMedian = alts.sorted().getOrNull(alts.size / 2)
+    val altSpan = if (alts.size >= 2) alts.max() - alts.min() else 0.0
+    val altitudeIsFitRaw = altMedian != null && altMedian > 2400.0 &&
+        (speedIsMmPerSec || altSpan < 600.0 && altMedian < 12_000.0)
+    if (!speedIsMmPerSec && !altitudeIsFitRaw) return track
+    return track.map { p ->
+        val speed = p.speedMps?.let { s ->
+            val metres = if (speedIsMmPerSec) s / 1000.0 else s
+            metres.takeIf { it >= 0.0 && it <= 55.0 }
+        }
+        val alt = p.altitudeMeters?.let { a ->
+            if (altitudeIsFitRaw) a / 5.0 - 500.0 else a
+        }
+        p.copy(speedMps = speed, altitudeMeters = alt)
+    }
+}
+
+fun chartSeries(track: List<TrackPoint>, valueOf: (TrackPoint) -> Double?): List<Pair<Double, Double>> {
+    val valued = track.mapNotNull { p -> valueOf(p)?.let { p to it } }
+    if (valued.size < 2) return emptyList()
+    val t0 = valued.minOf { it.first.timestampMillis }
+    val t1 = valued.maxOf { it.first.timestampMillis }
+    if (t1 - t0 >= 1000L) {
+        return valued.map { ((it.first.timestampMillis - t0) / 1000.0) to it.second }
+    }
+    val e0 = valued.minOf { it.first.elapsedSeconds }
+    val e1 = valued.maxOf { it.first.elapsedSeconds }
+    if (e1 - e0 >= 1e-3) {
+        return valued.map { it.first.elapsedSeconds to it.second }
+    }
+    return valued.mapIndexed { i, p -> i.toDouble() to p.second }
+}
+
+fun windowedSeries(
+    series: List<Pair<Double, Double>>,
+    startFrac: Float,
+    endFrac: Float,
+): List<Pair<Double, Double>> {
+    if (series.size < 2) return series
+    val minX = series.minOf { it.first }
+    val maxX = series.maxOf { it.first }
+    val span = (maxX - minX).coerceAtLeast(1e-3)
+    val x0 = minX + span * startFrac.toDouble()
+    val x1 = minX + span * endFrac.toDouble()
+    var first = series.indexOfFirst { it.first >= x0 }
+    if (first < 0) first = series.lastIndex
+    if (first > 0) first -= 1
+    var last = series.indexOfLast { it.first <= x1 }
+    if (last < 0) last = 0
+    if (last < series.lastIndex) last += 1
+    if (last < first) return series
+    return series.subList(first, last + 1)
+}

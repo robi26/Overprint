@@ -7,6 +7,7 @@ import net.roz.connectstats.domain.model.DataSource
 import net.roz.connectstats.domain.model.Lap
 import net.roz.connectstats.domain.model.TrackPoint
 import net.roz.connectstats.domain.stats.StatsEngine
+import net.roz.connectstats.domain.stats.sanitizeFitUnits
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.pow
@@ -33,12 +34,19 @@ object FitParser {
             val header = bytes[offset].toInt() and 0xFF
             offset++
             if (header and 0x80 != 0) {
-                val local = header and 0x0F
+                val local = (header shr 5) and 0x03
                 val timeOffset = header and 0x1F
-                val def = localDefs[local] ?: continue
-                val tsBase = lastTimestamp ?: continue
-                lastTimestamp = (tsBase and 0xFFFFFFE0L) + timeOffset
-                val (next, values) = readFields(bytes, offset, def)
+                val def = localDefs[local] ?: break
+                val tsBase = lastTimestamp
+                if (tsBase != null) {
+                    val baseOff = (tsBase and 0x1F).toInt()
+                    lastTimestamp = if (timeOffset >= baseOff) {
+                        (tsBase and 0xFFFFFFE0L) + timeOffset
+                    } else {
+                        (tsBase and 0xFFFFFFE0L) + timeOffset + 0x20
+                    }
+                }
+                val (next, values) = readFields(bytes, offset, def, omitTimestamp = true)
                 offset = next
                 ingest(def.global, values, lastTimestamp, records, laps, session)
                 continue
@@ -61,12 +69,18 @@ object FitParser {
                     offset += 3
                     fields += FieldDef(num, size, base)
                 }
+                var devDataSize = 0
                 if (hasDev) {
                     val devCount = bytes[offset].toInt() and 0xFF
                     offset++
-                    offset += devCount * 3
+                    repeat(devCount) {
+                        if (offset + 2 < bytes.size) {
+                            devDataSize += bytes[offset + 1].toInt() and 0xFF
+                        }
+                        offset += 3
+                    }
                 }
-                localDefs[local] = Definition(global, architecture == 1, fields)
+                localDefs[local] = Definition(global, architecture == 1, fields, devDataSize)
             } else {
                 val def = localDefs[local] ?: break
                 val (next, values) = readFields(bytes, offset, def)
@@ -77,13 +91,16 @@ object FitParser {
             }
         }
 
-        val startMillis = fitTimestampToMillis(session.startTime ?: records.firstOrNull()?.timestamp ?: FIT_EPOCH_OFFSET)
+        val firstRecordTs = records.mapNotNull { it.timestamp }.minOrNull()
+        val startFitTs = listOfNotNull(session.startTime, firstRecordTs).minOrNull() ?: 0L
+        val startMillis = fitTimestampToMillis(startFitTs)
+        val trackZeroMillis = fitTimestampToMillis(firstRecordTs ?: startFitTs)
         val track = records.mapIndexed { i, r ->
-            val ts = fitTimestampToMillis(r.timestamp ?: (session.startTime ?: 0) + i)
+            val ts = fitTimestampToMillis(r.timestamp ?: startFitTs + i)
             TrackPoint(
                 activityId = id,
                 timestampMillis = ts,
-                elapsedSeconds = ((ts - startMillis) / 1000.0).coerceAtLeast(0.0),
+                elapsedSeconds = ((ts - trackZeroMillis) / 1000.0).coerceAtLeast(0.0),
                 latitude = r.lat,
                 longitude = r.lon,
                 altitudeMeters = r.alt,
@@ -95,7 +112,7 @@ object FitParser {
                 gradePercent = r.grade,
                 temperatureC = r.temp,
             )
-        }.let { StatsEngine.enrichTrack(it) }
+        }.let { StatsEngine.enrichTrack(sanitizeFitUnits(it)) }
 
         val type = ActivityType.fromKey(session.sport)
         val activity = if (session.distance != null || session.elapsed != null) {
@@ -162,9 +179,9 @@ object FitParser {
                 timestamp = timestamp,
                 lat = semicircles(values[0]),
                 lon = semicircles(values[1]),
-                alt = values[78] ?: values[2]?.let { it / 5.0 - 500 },
+                alt = (values[78] ?: values[2])?.let { it / 5.0 - 500 },
                 distance = values[5]?.div(100.0),
-                speed = values[73] ?: values[6]?.div(1000.0),
+                speed = values[73]?.div(1000.0) ?: values[6]?.div(1000.0),
                 hr = values[3],
                 cadence = values[4],
                 power = values[7],
@@ -172,24 +189,24 @@ object FitParser {
                 temp = values[13],
             )
             19 -> laps += RawLap(
-                start = values[253]?.toLong() ?: timestamp,
-                elapsed = values[7] ?: values[8],
+                start = values[2]?.toLong() ?: values[253]?.toLong() ?: timestamp,
+                elapsed = values[7]?.div(1000.0) ?: values[8]?.div(1000.0),
                 distance = values[9]?.div(100.0),
                 avgHr = values[15],
                 maxHr = values[16],
-                avgSpeed = values[14]?.div(1000.0) ?: values[110],
+                avgSpeed = values[14]?.div(1000.0) ?: values[110]?.div(1000.0),
                 avgCadence = values[17],
                 avgPower = values[19],
                 elev = values[21],
             )
             18 -> {
-                session.startTime = values[253]?.toLong() ?: session.startTime
+                session.startTime = values[2]?.toLong() ?: session.startTime
                 session.sport = sportName(values[5]?.toInt())
-                session.elapsed = values[7] ?: values[8] ?: session.elapsed
-                session.timer = values[8] ?: session.timer
+                session.elapsed = values[7]?.div(1000.0) ?: values[8]?.div(1000.0) ?: session.elapsed
+                session.timer = values[8]?.div(1000.0) ?: session.timer
                 session.distance = values[9]?.div(100.0) ?: session.distance
-                session.avgSpeed = values[14]?.div(1000.0) ?: values[124] ?: session.avgSpeed
-                session.maxSpeed = values[15]?.div(1000.0) ?: session.maxSpeed
+                session.avgSpeed = values[14]?.div(1000.0) ?: values[124]?.div(1000.0) ?: session.avgSpeed
+                session.maxSpeed = values[15]?.div(1000.0) ?: values[125]?.div(1000.0) ?: session.maxSpeed
                 session.avgHr = values[16] ?: session.avgHr
                 session.maxHr = values[17] ?: session.maxHr
                 session.avgCadence = values[18] ?: session.avgCadence
@@ -201,16 +218,24 @@ object FitParser {
         }
     }
 
-    private fun readFields(bytes: ByteArray, start: Int, def: Definition): Pair<Int, Map<Int, Double>> {
+    private fun readFields(
+        bytes: ByteArray,
+        start: Int,
+        def: Definition,
+        omitTimestamp: Boolean = false,
+    ): Pair<Int, Map<Int, Double>> {
         var offset = start
         val values = HashMap<Int, Double>()
         val order = if (def.bigEndian) ByteOrder.BIG_ENDIAN else ByteOrder.LITTLE_ENDIAN
         for (field in def.fields) {
+            if (omitTimestamp && field.num == 253) continue
             if (offset + field.size > bytes.size) break
             val raw = decodeNumber(bytes, offset, field.size, field.base, order)
             if (raw != null) values[field.num] = raw
             offset += field.size
         }
+        offset += def.devDataSize
+        if (offset > bytes.size) offset = bytes.size
         return offset to values
     }
 
@@ -306,7 +331,7 @@ object FitParser {
     private const val FIT_EPOCH_OFFSET = 631065600L // seconds between unix epoch and FIT epoch (1989-12-31)
 
     private data class FieldDef(val num: Int, val size: Int, val base: Int)
-    private data class Definition(val global: Int, val bigEndian: Boolean, val fields: List<FieldDef>)
+    private data class Definition(val global: Int, val bigEndian: Boolean, val fields: List<FieldDef>, val devDataSize: Int = 0)
     private data class RawRecord(
         val timestamp: Long?,
         val lat: Double?,

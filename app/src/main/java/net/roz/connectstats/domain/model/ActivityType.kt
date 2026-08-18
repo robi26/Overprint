@@ -44,3 +44,63 @@ enum class DataSource { GARMIN, STRAVA, FILE, DEMO }
 enum class MapMetric { HEART_RATE, SPEED, POWER, CADENCE, ELEVATION, GRADE }
 
 enum class ChartMetric { HEART_RATE, PACE, SPEED, POWER, CADENCE, ELEVATION, GRADE }
+
+fun ChartMetric.title(): String = when (this) {
+    ChartMetric.HEART_RATE -> "Heart rate"
+    ChartMetric.PACE -> "Pace"
+    ChartMetric.SPEED -> "Speed"
+    ChartMetric.POWER -> "Power"
+    ChartMetric.CADENCE -> "Cadence"
+    ChartMetric.ELEVATION -> "Elevation"
+    ChartMetric.GRADE -> "Grade"
+}
+
+fun ChartMetric.shortTitle(): String = when (this) {
+    ChartMetric.HEART_RATE -> "HR"
+    ChartMetric.PACE -> "Pace"
+    ChartMetric.SPEED -> "Speed"
+    ChartMetric.POWER -> "Power"
+    ChartMetric.CADENCE -> "Cadence"
+    ChartMetric.ELEVATION -> "Elev"
+    ChartMetric.GRADE -> "Grade"
+}
+
+fun ChartMetric.unit(metric: Boolean = true): String = when (this) {
+    ChartMetric.HEART_RATE -> "bpm"
+    ChartMetric.PACE -> if (metric) "/km" else "/mi"
+    ChartMetric.SPEED -> if (metric) "km/h" else "mph"
+    ChartMetric.POWER -> "W"
+    ChartMetric.CADENCE -> "rpm"
+    ChartMetric.ELEVATION -> if (metric) "m" else "ft"
+    ChartMetric.GRADE -> "%"
+}
+
+fun TrackPoint.chartValue(metric: ChartMetric, metricUnits: Boolean = true): Double? = when (metric) {
+    ChartMetric.HEART_RATE -> heartRate
+    ChartMetric.PACE -> speedMps?.let { raw ->
+        val mps = if (raw > 80.0) raw / 1000.0 else raw
+        mps.takeIf { it > 0.3 }?.let { speed ->
+            val secPerKm = 1000.0 / speed
+            if (metricUnits) secPerKm else secPerKm * 1.609344
+        }
+    }
+    ChartMetric.SPEED -> speedMps?.takeIf { it >= 0 }?.let { raw ->
+        val mps = if (raw > 80.0) raw / 1000.0 else raw
+        mps.takeIf { it in 0.0..55.0 }?.times(if (metricUnits) 3.6 else 2.236936)
+    }
+    ChartMetric.POWER -> power
+    ChartMetric.CADENCE -> cadence
+    ChartMetric.ELEVATION -> altitudeMeters?.let { if (metricUnits) it else it * 3.28084 }
+    ChartMetric.GRADE -> gradePercent
+}
+
+fun formatChartValue(metric: ChartMetric, value: Double): String = when (metric) {
+    ChartMetric.PACE -> {
+        val total = kotlin.math.round(value).toInt().coerceAtLeast(0)
+        String.format(java.util.Locale.US, "%d:%02d", total / 60, total % 60)
+    }
+    ChartMetric.HEART_RATE, ChartMetric.CADENCE, ChartMetric.POWER, ChartMetric.ELEVATION ->
+        String.format(java.util.Locale.US, "%.0f", value)
+    ChartMetric.SPEED, ChartMetric.GRADE ->
+        String.format(java.util.Locale.US, "%.1f", value)
+}

@@ -23,6 +23,8 @@ import net.roz.connectstats.domain.model.GeoPoint
 import net.roz.connectstats.domain.model.GpsTrack
 import net.roz.connectstats.domain.model.Lap
 import net.roz.connectstats.domain.model.TrackPoint
+import net.roz.connectstats.domain.stats.sanitizeFitUnits
+import net.roz.connectstats.domain.stats.withNormalizedElapsed
 import kotlin.math.min
 
 class ActivityRepository(
@@ -35,7 +37,7 @@ class ActivityRepository(
 
     suspend fun get(id: String): ActivityDetail? {
         val entity = db.activities().byId(id) ?: return null
-        val track = db.tracks().forActivity(id).map { it.toModel() }
+        val track = withNormalizedElapsed(sanitizeFitUnits(db.tracks().forActivity(id).map { it.toModel() }))
         val laps = db.laps().forActivity(id).map { it.toModel() }
         return ActivityDetail(entity.toModel(), track, laps)
     }

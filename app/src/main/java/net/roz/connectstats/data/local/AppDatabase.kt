@@ -134,7 +134,7 @@ interface TrackDao {
     )
     suspend fun gpsSamplesFor(activityIds: List<String>, stride: Int): List<GpsSample>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert
     suspend fun insertAll(points: List<TrackPointEntity>)
 
     @Query("DELETE FROM track_points WHERE activityId = :id")
@@ -149,7 +149,7 @@ interface LapDao {
     @Query("SELECT * FROM laps WHERE activityId = :id ORDER BY `index` ASC")
     suspend fun forActivity(id: String): List<LapEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert
     suspend fun insertAll(laps: List<LapEntity>)
 
     @Query("DELETE FROM laps WHERE activityId = :id")

@@ -30,6 +30,9 @@ import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.ActivityDetail
 import net.roz.connectstats.domain.model.ChartMetric
 import net.roz.connectstats.domain.model.MapMetric
+import net.roz.connectstats.domain.model.chartValue
+import net.roz.connectstats.domain.model.shortTitle
+import net.roz.connectstats.domain.model.unit
 import net.roz.connectstats.domain.stats.StatsEngine
 import net.roz.connectstats.ui.components.ChartCard
 import net.roz.connectstats.ui.components.GradientTrackMap
@@ -48,7 +51,12 @@ fun ActivityDetailScreen(
     }
     val act = detail.activity
     var mapMetric by remember { mutableStateOf(MapMetric.HEART_RATE) }
-    var chartMetric by remember { mutableStateOf(ChartMetric.HEART_RATE) }
+    var chartMetrics by remember(detail.activity.id) {
+        val initial = ChartMetric.entries.firstOrNull { m ->
+            detail.track.count { it.chartValue(m) != null } >= 2
+        } ?: ChartMetric.HEART_RATE
+        mutableStateOf<Set<ChartMetric>>(linkedSetOf(initial))
+    }
     val hrZones = remember(detail.track, maxHr) { StatsEngine.timeInHrZones(detail.track, maxHr) }
     val pwZones = remember(detail.track, ftp) { StatsEngine.timeInPowerZones(detail.track, ftp) }
     val rolling = remember(detail.track) { StatsEngine.bestRolling(detail.track) }
@@ -98,14 +106,19 @@ fun ActivityDetailScreen(
             ChartCard(title = "Graphs") {
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChartMetric.entries.forEach { m ->
+                        val selected = m in chartMetrics
                         FilterChip(
-                            selected = chartMetric == m,
-                            onClick = { chartMetric = m },
-                            label = { Text(m.name.lowercase().replace('_', ' ')) },
+                            selected = selected,
+                            onClick = {
+                                chartMetrics = if (selected) {
+                                    if (chartMetrics.size > 1) chartMetrics - m else chartMetrics
+                                } else chartMetrics + m
+                            },
+                            label = { Text("${m.shortTitle()} ${m.unit(fmt.metric)}") },
                         )
                     }
                 }
-                TrackChart(detail.track, chartMetric)
+                TrackChart(detail.track, chartMetrics, fmt.metric)
             }
         }
 
