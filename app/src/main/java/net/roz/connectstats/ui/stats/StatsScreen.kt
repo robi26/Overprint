@@ -35,6 +35,7 @@ import net.roz.connectstats.ui.components.BarChart
 import net.roz.connectstats.ui.components.ChartCard
 import net.roz.connectstats.ui.components.HistogramChart
 import net.roz.connectstats.ui.components.ScatterChart
+import net.roz.connectstats.ui.components.YearCompareChart
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -82,6 +83,14 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     val scatter = remember(filtered) {
         StatsEngine.scatter(filtered, x = { it.plausibleAvgHr() }, y = { it.plausiblePaceSecPerKm() })
     }
+    val yearly = remember(byType, fmt.metric) {
+        StatsEngine.yearlyCumulativeDistance(byType).map { s ->
+            s.copy(
+                points = s.points.map { it.first to fmt.kmToChartUnit(it.second) },
+                totalKm = fmt.kmToChartUnit(s.totalKm),
+            )
+        }
+    }
     val unit = fmt.distanceUnit()
 
     Column(
@@ -122,6 +131,14 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
             subtitle = trendSubtitle(monthly, "month"),
         ) {
             BarChart(monthly, yFormatter = { String.format(Locale.US, "%.0f", it) })
+        }
+        ChartCard(
+            title = "Distance (${unit})",
+            headline = yearly.firstOrNull { it.isCurrent }?.let { String.format(Locale.US, "%.1f", it.totalKm) + " $unit" }
+                ?: yearly.firstOrNull { it.isBest }?.let { String.format(Locale.US, "%.1f", it.totalKm) + " $unit" },
+            subtitle = "Cumulative distance by day of year. Thick line is this year; shaded is the best year.",
+        ) {
+            YearCompareChart(yearly)
         }
         ChartCard(
             title = "Histogram",

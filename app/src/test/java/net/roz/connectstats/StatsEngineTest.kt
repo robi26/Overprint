@@ -233,6 +233,25 @@ class StatsEngineTest {
     }
 
     @Test
+    fun yearlyCumulativeMarksCurrentAndBest() {
+        val cal = java.util.Calendar.getInstance().apply { clear(); set(2024, 0, 10) }
+        val y2024a = sample("a", cal.timeInMillis, 10_000.0)
+        cal.set(2024, 5, 10)
+        val y2024b = sample("b", cal.timeInMillis, 20_000.0)
+        cal.set(2025, 0, 10)
+        val y2025 = sample("c", cal.timeInMillis, 5_000.0)
+        cal.set(2025, 11, 31, 12, 0, 0)
+        val series = StatsEngine.yearlyCumulativeDistance(listOf(y2024a, y2024b, y2025), now = cal.timeInMillis)
+        assertEquals(listOf(2025, 2024), series.map { it.year })
+        assertEquals(30.0, series.first { it.year == 2024 }.totalKm, 0.01)
+        assertEquals(5.0, series.first { it.year == 2025 }.totalKm, 0.01)
+        assertEquals(true, series.first { it.year == 2024 }.isBest)
+        assertEquals(true, series.first { it.year == 2025 }.isCurrent)
+        val mid2024 = series.first { it.year == 2024 }.points.first { it.first == 32 }
+        assertEquals(10.0, mid2024.second, 0.01)
+    }
+
+    @Test
     fun sanitizeActivityLeavesNormalRide() {
         val raw = sample("ride", 0L, 18_300.0).copy(
             durationSeconds = 2000.0,

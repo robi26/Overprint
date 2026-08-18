@@ -45,6 +45,14 @@ data class RollingBest(
 
 data class TrendPoint(val millis: Long, val value: Double, val label: String)
 
+data class YearDistanceSeries(
+    val year: Int,
+    val points: List<Pair<Int, Double>>,
+    val totalKm: Double,
+    val isCurrent: Boolean,
+    val isBest: Boolean,
+)
+
 object StatsEngine {
 
     fun periodSummaries(activities: List<Activity>, now: Long = System.currentTimeMillis()): List<PeriodSummary> {
@@ -86,6 +94,44 @@ object StatsEngine {
             n.add(Calendar.MONTH, 1)
             val slice = activities.filter { it.startTimeMillis in start until n.timeInMillis }
             TrendPoint(start, slice.sumOf { it.distanceMeters } / 1000.0, monthLabel(c))
+        }
+    }
+
+    fun yearlyCumulativeDistance(
+        activities: List<Activity>,
+        now: Long = System.currentTimeMillis(),
+    ): List<YearDistanceSeries> {
+        if (activities.isEmpty()) return emptyList()
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = now
+        val currentYear = cal.get(Calendar.YEAR)
+        val todayDoy = cal.get(Calendar.DAY_OF_YEAR)
+        val byYear = activities.groupBy { calendarYear(it.startTimeMillis) }
+        val raw = byYear.keys.sortedDescending().map { year ->
+            val days = if (year == currentYear) todayDoy else daysInYear(year)
+            val added = DoubleArray(days + 1)
+            for (a in byYear.getValue(year)) {
+                cal.timeInMillis = a.startTimeMillis
+                val doy = cal.get(Calendar.DAY_OF_YEAR).coerceIn(1, days)
+                added[doy] += a.distanceMeters / 1000.0
+            }
+            var sum = 0.0
+            val points = ArrayList<Pair<Int, Double>>(days)
+            for (d in 1..days) {
+                sum += added[d]
+                points += d to sum
+            }
+            year to (points to sum)
+        }
+        val bestYear = raw.maxByOrNull { it.second.second }?.first
+        return raw.map { (year, data) ->
+            YearDistanceSeries(
+                year = year,
+                points = data.first,
+                totalKm = data.second,
+                isCurrent = year == currentYear,
+                isBest = year == bestYear,
+            )
         }
     }
 
@@ -349,6 +395,21 @@ object StatsEngine {
         cal.set(Calendar.MONTH, Calendar.JANUARY)
         cal.set(Calendar.DAY_OF_MONTH, 1)
         return startOfDay(cal)
+    }
+
+    private fun calendarYear(millis: Long): Int {
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = millis
+        return cal.get(Calendar.YEAR)
+    }
+
+    private fun daysInYear(year: Int): Int {
+        val cal = Calendar.getInstance()
+        cal.clear()
+        cal.set(Calendar.YEAR, year)
+        cal.set(Calendar.MONTH, Calendar.DECEMBER)
+        cal.set(Calendar.DAY_OF_MONTH, 31)
+        return cal.get(Calendar.DAY_OF_YEAR)
     }
 
     private fun monthLabel(cal: Calendar): String {

@@ -657,7 +657,7 @@ fun ScatterChart(points: List<ScatterPoint>, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun AxisLabels(
+internal fun AxisLabels(
     labels: List<String>,
     color: Color = Color.Unspecified,
     alignEnd: Boolean = true,
@@ -680,7 +680,7 @@ private fun AxisLabels(
 }
 
 @Composable
-private fun ChartEmpty(message: String = "No data") {
+internal fun ChartEmpty(message: String = "No data") {
     Box(
         Modifier.fillMaxWidth().height(120.dp),
         contentAlignment = Alignment.Center,
@@ -710,7 +710,7 @@ private fun DrawScope.drawTopRoundedBar(
     drawPath(path, color)
 }
 
-private fun niceMax(raw: Double): Double {
+internal fun niceMax(raw: Double): Double {
     if (raw <= 0.0) return 1.0
     val mag = 10.0.pow(floor(log10(raw)))
     val n = raw / mag
@@ -766,7 +766,7 @@ private fun niceNum(range: Double, round: Boolean): Double {
     return nice * 10.0.pow(exp)
 }
 
-private fun formatTick(value: Double): String {
+internal fun formatTick(value: Double): String {
     val abs = kotlin.math.abs(value)
     return when {
         abs >= 100 -> String.format(Locale.US, "%.0f", value)
