@@ -78,8 +78,8 @@ fun HeatmapScreen(
     var showTracks by remember { mutableStateOf(true) }
 
     val byFilter = remember(activities, type, year) { filterBySportAndYear(activities, type, year) }
-    val idsKey = remember(byFilter) { byFilter.map { it.id }.joinToString() }
-    LaunchedEffect(idsKey) { onLoadTracks(byFilter.map { it.id }) }
+    val idsKey = remember(byFilter) { byFilter.filter { it.hasTrack }.map { it.id }.joinToString() }
+    LaunchedEffect(idsKey) { onLoadTracks(byFilter.filter { it.hasTrack }.map { it.id }) }
 
     val trackById = remember(tracks) { tracks.associateBy { it.activityId } }
     val mapped = remember(byFilter, trackById) { byFilter.filter { it.id in trackById } }
