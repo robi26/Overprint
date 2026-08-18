@@ -7,7 +7,9 @@ import net.roz.connectstats.domain.model.DataSource
 import net.roz.connectstats.domain.model.Lap
 import net.roz.connectstats.domain.model.TrackPoint
 import net.roz.connectstats.domain.stats.StatsEngine
+import net.roz.connectstats.domain.stats.sanitizeActivity
 import net.roz.connectstats.domain.stats.sanitizeFitUnits
+import net.roz.connectstats.domain.stats.sanitizeLap
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.pow
@@ -163,7 +165,11 @@ object FitParser {
             )
         }
 
-        return ActivityDetail(activity.copy(id = id, hasTrack = track.isNotEmpty()), track.map { it.copy(activityId = id) }, parsedLaps)
+        return ActivityDetail(
+            sanitizeActivity(activity.copy(id = id, hasTrack = track.isNotEmpty())),
+            track.map { it.copy(activityId = id) },
+            parsedLaps.map { sanitizeLap(it.copy(activityId = id)) },
+        )
     }
 
     private fun ingest(

@@ -624,7 +624,7 @@ fun ScatterChart(points: List<ScatterPoint>, modifier: Modifier = Modifier) {
                 points.forEach { p ->
                     val px = (((p.x - minX) / xSpan) * (size.width - 16f) + 8f).toFloat()
                     val py = (size.height - 8f - (p.y - minY) / ySpan * (size.height - 16f)).toFloat()
-                    drawCircle(p.type.colorArgb.toComposeColor(), 6.dp.toPx(), Offset(px, py))
+                    drawCircle(p.type.colorArgb.toComposeColor(), 2.dp.toPx(), Offset(px, py))
                 }
             }
         }

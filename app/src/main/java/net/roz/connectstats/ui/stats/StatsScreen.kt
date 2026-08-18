@@ -22,6 +22,11 @@ import androidx.compose.ui.unit.dp
 import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityType
+import net.roz.connectstats.domain.model.plausibleAvgHr
+import net.roz.connectstats.domain.model.plausibleDistanceKm
+import net.roz.connectstats.domain.model.plausibleDurationMinutes
+import net.roz.connectstats.domain.model.plausiblePaceSecPerKm
+import net.roz.connectstats.domain.model.plausiblePower
 import net.roz.connectstats.domain.stats.StatsEngine
 import net.roz.connectstats.domain.stats.TrendPoint
 import net.roz.connectstats.ui.common.SportAndYearFilters
@@ -56,11 +61,11 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     val histValues = remember(filtered, hist) {
         filtered.mapNotNull {
             when (hist) {
-                HistField.DISTANCE -> it.distanceMeters / 1000.0
-                HistField.DURATION -> it.durationSeconds / 60.0
-                HistField.HR -> it.avgHeartRate
-                HistField.PACE -> it.paceSecPerKm
-                HistField.POWER -> it.avgPower
+                HistField.DISTANCE -> it.plausibleDistanceKm()
+                HistField.DURATION -> it.plausibleDurationMinutes()
+                HistField.HR -> it.plausibleAvgHr()
+                HistField.PACE -> it.plausiblePaceSecPerKm()
+                HistField.POWER -> it.plausiblePower()
             }
         }
     }
@@ -75,7 +80,7 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
         StatsEngine.histogram(histValues, unitLabel = unit)
     }
     val scatter = remember(filtered) {
-        StatsEngine.scatter(filtered, x = { it.avgHeartRate }, y = { it.paceSecPerKm })
+        StatsEngine.scatter(filtered, x = { it.plausibleAvgHr() }, y = { it.plausiblePaceSecPerKm() })
     }
     val unit = fmt.distanceUnit()
 
@@ -132,7 +137,7 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
         }
         ChartCard(
             title = "Heart rate vs pace",
-            subtitle = "Each point is an activity for the selected sport.",
+            subtitle = "Each point is an activity with a plausible heart rate and pace.",
         ) {
             ScatterChart(scatter)
         }

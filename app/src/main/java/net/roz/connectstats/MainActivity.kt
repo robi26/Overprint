@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.SideEffect
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -16,6 +17,8 @@ import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.MoreHoriz
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -28,6 +31,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -109,6 +113,20 @@ private fun OverprintNav(
                         }
                     }
                 },
+                actions = {
+                    if (route == "activities") {
+                        IconButton(
+                            onClick = viewModel::refresh,
+                            enabled = !state.garminSync.running,
+                        ) {
+                            if (state.garminSync.running) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Outlined.Refresh, contentDescription = "Refresh from Garmin")
+                            }
+                        }
+                    }
+                },
             )
         },
         bottomBar = {
@@ -152,7 +170,6 @@ private fun OverprintNav(
                     fmt = state.fmt,
                     onQuery = viewModel::setQuery,
                     onType = viewModel::setType,
-                    onRefresh = viewModel::refresh,
                     onOpen = {
                         viewModel.open(it)
                         nav.navigate("detail")

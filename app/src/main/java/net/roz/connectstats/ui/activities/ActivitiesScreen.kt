@@ -26,7 +26,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,7 +49,6 @@ fun ActivitiesScreen(
     fmt: Formatters,
     onQuery: (String) -> Unit,
     onType: (ActivityType?) -> Unit,
-    onRefresh: () -> Unit,
     onOpen: (Activity) -> Unit,
 ) {
     val types = listOf(null) + ActivityType.entries
@@ -77,11 +75,6 @@ fun ActivitiesScreen(
             }
         }
         GarminSyncStatus(garminSync, Modifier.padding(horizontal = 16.dp))
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onRefresh, enabled = !garminSync.running) {
-                Text(if (garminSync.running) "Syncing…" else "Refresh")
-            }
-        }
         if (activities.isEmpty()) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                 Text("No activities yet.\nOpen Settings to load demo data, import FIT files, or connect Garmin.")

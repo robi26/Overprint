@@ -46,6 +46,28 @@ data class Activity(
     }
 }
 
+/** Average HR that can come from a real activity (not a sensor glitch or missing value). */
+fun Activity.plausibleAvgHr(): Double? = avgHeartRate?.takeIf { it in 50.0..220.0 }
+
+/**
+ * Pace in seconds per kilometre, dropping GPS/FIT outliers that flatten scatter plots.
+ * Allows cycling (~60 km/h) through slow hiking (~2 km/h); requires a real distance and duration.
+ */
+fun Activity.plausiblePaceSecPerKm(): Double? {
+    if (distanceMeters < 400.0) return null
+    if (durationSeconds !in 60.0..(12.0 * 3600.0)) return null
+    return paceSecPerKm?.takeIf { it in 60.0..1_800.0 }
+}
+
+fun Activity.plausiblePower(): Double? = avgPower?.takeIf { it in 20.0..2_000.0 }
+
+fun Activity.plausibleDistanceKm(): Double? =
+    distanceMeters.takeIf { it in 50.0..500_000.0 }?.div(1000.0)
+
+fun Activity.plausibleDurationMinutes(): Double? =
+    durationSeconds.takeIf { it in 60.0..(16.0 * 3600.0) }?.div(60.0)
+
+
 data class TrackPoint(
     val activityId: String,
     val timestampMillis: Long,

@@ -4,12 +4,15 @@ import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityType
 import net.roz.connectstats.domain.model.ChartMetric
+import net.roz.connectstats.domain.model.plausibleAvgHr
+import net.roz.connectstats.domain.model.plausiblePaceSecPerKm
 import net.roz.connectstats.domain.model.DataSource
 import net.roz.connectstats.domain.model.TrackPoint
 import net.roz.connectstats.domain.model.chartValue
 import net.roz.connectstats.domain.model.unit
 import net.roz.connectstats.domain.stats.StatsEngine
 import net.roz.connectstats.domain.stats.chartSeries
+import net.roz.connectstats.domain.stats.sanitizeActivity
 import net.roz.connectstats.domain.stats.sanitizeFitUnits
 import net.roz.connectstats.domain.stats.windowedSeries
 import net.roz.connectstats.domain.stats.withNormalizedElapsed
@@ -182,6 +185,62 @@ class StatsEngineTest {
         val fixed = sanitizeFitUnits(track)
         assertEquals(2400.0, fixed.first().altitudeMeters!!, 0.1)
         assertEquals(1.4, fixed.first().speedMps!!, 0.01)
+    }
+
+    @Test
+    fun sanitizeActivityDecodesMillisecondDurationAndMmSpeed() {
+        val raw = sample("ride", 0L, 18_300.0).copy(
+            durationSeconds = 1_999_379.0,
+            movingSeconds = 1_999_379.0,
+            avgSpeedMps = 9_155.0,
+            maxSpeedMps = 15_000.0,
+            avgPower = 168.0,
+        )
+        val fixed = sanitizeActivity(raw)
+        assertEquals(1999.379, fixed.durationSeconds, 0.01)
+        assertEquals(9.155, fixed.avgSpeedMps!!, 0.01)
+        assertEquals(15.0, fixed.maxSpeedMps!!, 0.01)
+        assertEquals(336.0, fixed.workKj!!, 2.0)
+    }
+
+    @Test
+    fun plausiblePaceDropsTinyDistanceAndInsaneDuration() {
+        val tiny = sample("tiny", 0L, 80.0)
+        val insane = sample("insane", 0L, 5_000.0).copy(durationSeconds = 100_000.0)
+        val normal = sample("ok", 0L, 5_000.0)
+        val fastRide = sample("ride", 0L, 20_000.0).copy(
+            type = ActivityType.CYCLING,
+            durationSeconds = 1_800.0,
+        )
+        assertEquals(null, tiny.plausiblePaceSecPerKm())
+        assertEquals(null, insane.plausiblePaceSecPerKm())
+        assertEquals(360.0, normal.plausiblePaceSecPerKm()!!, 0.1)
+        assertEquals(90.0, fastRide.plausiblePaceSecPerKm()!!, 0.1)
+    }
+
+    @Test
+    fun scatterSkipsImplausibleHeartRateAndPace() {
+        val ok = sample("ok", 0L, 5_000.0)
+        val badHr = ok.copy(id = "hr", externalId = "hr", avgHeartRate = 8.0)
+        val badPace = ok.copy(id = "pace", externalId = "pace", durationSeconds = 100_000.0)
+        val points = StatsEngine.scatter(
+            listOf(ok, badHr, badPace),
+            x = { it.plausibleAvgHr() },
+            y = { it.plausiblePaceSecPerKm() },
+        )
+        assertEquals(1, points.size)
+        assertEquals("ok", points.single().activityId)
+    }
+
+    @Test
+    fun sanitizeActivityLeavesNormalRide() {
+        val raw = sample("ride", 0L, 18_300.0).copy(
+            durationSeconds = 2000.0,
+            avgSpeedMps = 9.15,
+        )
+        val fixed = sanitizeActivity(raw)
+        assertEquals(2000.0, fixed.durationSeconds, 0.01)
+        assertEquals(9.15, fixed.avgSpeedMps!!, 0.01)
     }
 
     private fun samplePoint(speed: Double, altitude: Double) = TrackPoint(

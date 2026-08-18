@@ -409,6 +409,37 @@ fun withNormalizedElapsed(track: List<TrackPoint>): List<TrackPoint> {
     return track.map { it.copy(elapsedSeconds = (it.timestampMillis - t0) / 1000.0) }
 }
 
+fun sanitizeActivity(activity: Activity): Activity = activity.copy(
+    durationSeconds = decodeDurationSeconds(activity.durationSeconds, activity.distanceMeters),
+    movingSeconds = decodeDurationSeconds(activity.movingSeconds, activity.distanceMeters),
+    avgSpeedMps = decodeSpeedMps(activity.avgSpeedMps),
+    maxSpeedMps = decodeSpeedMps(activity.maxSpeedMps),
+)
+
+fun sanitizeLap(lap: Lap): Lap = lap.copy(
+    durationSeconds = decodeDurationSeconds(lap.durationSeconds, lap.distanceMeters),
+    avgSpeedMps = decodeSpeedMps(lap.avgSpeedMps),
+)
+
+fun decodeDurationSeconds(duration: Double, distanceMeters: Double): Double {
+    if (!duration.isFinite() || duration <= 0.0) return duration
+    val asSeconds = duration / 1000.0
+    if (duration > 200_000) return asSeconds
+    if (distanceMeters > 100 && duration > 3_600) {
+        val speedIfSeconds = distanceMeters / duration
+        val speedIfMillis = distanceMeters / asSeconds
+        if (speedIfSeconds < 0.4 && speedIfMillis in 0.5..30.0) return asSeconds
+    }
+    return duration
+}
+
+fun decodeSpeedMps(speed: Double?): Double? {
+    val value = speed ?: return null
+    if (!value.isFinite() || value < 0.0) return null
+    val metres = if (value > 80.0) value / 1000.0 else value
+    return metres.takeIf { it <= 55.0 }
+}
+
 fun sanitizeFitUnits(track: List<TrackPoint>): List<TrackPoint> {
     if (track.isEmpty()) return track
     val speeds = track.mapNotNull { it.speedMps?.takeIf { s -> s.isFinite() } }

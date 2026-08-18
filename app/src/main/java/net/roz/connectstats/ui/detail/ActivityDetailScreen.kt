@@ -92,11 +92,13 @@ fun ActivityDetailScreen(
     val selectedTab = if (tab in tabs) tab else DetailTab.OVERVIEW
 
     Column(Modifier.fillMaxSize()) {
-        Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 8.dp)) {
-            Text(act.name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        val subtitle = listOfNotNull(fmt.dateTime(act.startTimeMillis), act.location, act.deviceName).joinToString(" · ")
+        if (subtitle.isNotBlank()) {
             Text(
-                listOfNotNull(fmt.dateTime(act.startTimeMillis), act.location, act.deviceName).joinToString(" · "),
+                subtitle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
             )
         }
         ScrollableTabRow(

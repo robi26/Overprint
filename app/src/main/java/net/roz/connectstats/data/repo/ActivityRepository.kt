@@ -23,7 +23,9 @@ import net.roz.connectstats.domain.model.GeoPoint
 import net.roz.connectstats.domain.model.GpsTrack
 import net.roz.connectstats.domain.model.Lap
 import net.roz.connectstats.domain.model.TrackPoint
+import net.roz.connectstats.domain.stats.sanitizeActivity
 import net.roz.connectstats.domain.stats.sanitizeFitUnits
+import net.roz.connectstats.domain.stats.sanitizeLap
 import net.roz.connectstats.domain.stats.withNormalizedElapsed
 import kotlin.math.min
 
@@ -217,11 +219,13 @@ private fun downsample(points: List<GeoPoint>, maxPoints: Int): List<GeoPoint> {
     return List(maxPoints) { i -> points[min(last, (i * step).toInt())] }
 }
 
-private fun ActivityEntity.toModel() = Activity(
-    id, externalId, DataSource.valueOf(source), name, ActivityType.fromKey(type),
-    startTimeMillis, location, distanceMeters, durationSeconds, movingSeconds,
-    elevationGainMeters, calories, avgHeartRate, maxHeartRate, avgSpeedMps, maxSpeedMps,
-    avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude, deviceName, hasTrack, notes,
+private fun ActivityEntity.toModel() = sanitizeActivity(
+    Activity(
+        id, externalId, DataSource.valueOf(source), name, ActivityType.fromKey(type),
+        startTimeMillis, location, distanceMeters, durationSeconds, movingSeconds,
+        elevationGainMeters, calories, avgHeartRate, maxHeartRate, avgSpeedMps, maxSpeedMps,
+        avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude, deviceName, hasTrack, notes,
+    ),
 )
 
 private fun Activity.toEntity() = ActivityEntity(
@@ -252,9 +256,11 @@ private fun TrackPoint.toEntity() = TrackPointEntity(
     temperatureC = temperatureC,
 )
 
-private fun LapEntity.toModel() = Lap(
-    activityId, index, startTimeMillis, durationSeconds, distanceMeters, avgHeartRate,
-    maxHeartRate, avgSpeedMps, avgCadence, avgPower, elevationGainMeters, label,
+private fun LapEntity.toModel() = sanitizeLap(
+    Lap(
+        activityId, index, startTimeMillis, durationSeconds, distanceMeters, avgHeartRate,
+        maxHeartRate, avgSpeedMps, avgCadence, avgPower, elevationGainMeters, label,
+    ),
 )
 
 private fun Lap.toEntity() = LapEntity(
