@@ -13,19 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Layers
-import androidx.compose.material.icons.outlined.Remove
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -56,6 +45,7 @@ import net.roz.connectstats.ui.common.SportAndYearFilters
 import net.roz.connectstats.ui.common.filterBySportAndYear
 import net.roz.connectstats.ui.components.metricColor
 import net.roz.connectstats.ui.theme.toComposeColor
+import java.util.Calendar
 import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
@@ -70,7 +60,7 @@ fun HeatmapScreen(
     onOpen: (Activity) -> Unit,
 ) {
     var type by remember { mutableStateOf<ActivityType?>(null) }
-    var year by remember { mutableStateOf<Int?>(null) }
+    var year by remember { mutableStateOf<Int?>(Calendar.getInstance().get(Calendar.YEAR)) }
     var camera by remember { mutableStateOf(MapCamera(47.3769, 8.5417, 12.0)) }
     var mapSize by remember { mutableStateOf(IntSize.Zero) }
     var baseStyle by remember { mutableStateOf(BaseMapStyle.STREETS) }
@@ -154,7 +144,7 @@ fun HeatmapScreen(
                     color = MaterialTheme.colorScheme.onSurface,
                 )
             }
-            LayerMenuButton(
+            MapLayerMenu(
                 baseStyle = baseStyle,
                 onBaseStyle = { baseStyle = it },
                 showHeat = showHeat,
@@ -163,21 +153,11 @@ fun HeatmapScreen(
                 onTracks = { showTracks = it },
                 modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
             )
-            Column(
-                Modifier.align(Alignment.BottomEnd).padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilledTonalIconButton(onClick = {
-                    camera = camera.copy(zoom = (camera.zoom + 1).coerceIn(MIN_MAP_ZOOM, MAX_MAP_ZOOM))
-                }) {
-                    Icon(Icons.Outlined.Add, contentDescription = "Zoom in")
-                }
-                FilledTonalIconButton(onClick = {
-                    camera = camera.copy(zoom = (camera.zoom - 1).coerceIn(MIN_MAP_ZOOM, MAX_MAP_ZOOM))
-                }) {
-                    Icon(Icons.Outlined.Remove, contentDescription = "Zoom out")
-                }
-            }
+            MapZoomButtons(
+                zoom = camera.zoom,
+                onZoom = { camera = camera.copy(zoom = it) },
+                modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+            )
         }
         Text(
             "${visibleActivities.size} tracks in view",
@@ -204,79 +184,6 @@ fun HeatmapScreen(
                     ActivityRow(act, fmt, onClick = { onOpen(act) })
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun LayerMenuButton(
-    baseStyle: BaseMapStyle,
-    onBaseStyle: (BaseMapStyle) -> Unit,
-    showHeat: Boolean,
-    onHeat: (Boolean) -> Unit,
-    showTracks: Boolean,
-    onTracks: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box(modifier) {
-        FilledTonalIconButton(onClick = { expanded = true }) {
-            Icon(Icons.Outlined.Layers, contentDescription = "Map layers")
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            Text(
-                "Basemap",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            )
-            DropdownMenuItem(
-                text = { Text("Streets") },
-                onClick = {
-                    onBaseStyle(BaseMapStyle.STREETS)
-                    expanded = false
-                },
-                leadingIcon = {
-                    RadioButton(selected = baseStyle == BaseMapStyle.STREETS, onClick = null)
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("Dark streets") },
-                onClick = {
-                    onBaseStyle(BaseMapStyle.DARK)
-                    expanded = false
-                },
-                leadingIcon = {
-                    RadioButton(selected = baseStyle == BaseMapStyle.DARK, onClick = null)
-                },
-            )
-            DropdownMenuItem(
-                text = { Text("No map") },
-                onClick = {
-                    onBaseStyle(BaseMapStyle.NONE)
-                    expanded = false
-                },
-                leadingIcon = {
-                    RadioButton(selected = baseStyle == BaseMapStyle.NONE, onClick = null)
-                },
-            )
-            HorizontalDivider()
-            Text(
-                "Overlays",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-            )
-            DropdownMenuItem(
-                text = { Text("Heat") },
-                onClick = { onHeat(!showHeat) },
-                trailingIcon = { Checkbox(checked = showHeat, onCheckedChange = null) },
-            )
-            DropdownMenuItem(
-                text = { Text("Tracks") },
-                onClick = { onTracks(!showTracks) },
-                trailingIcon = { Checkbox(checked = showTracks, onCheckedChange = null) },
-            )
         }
     }
 }

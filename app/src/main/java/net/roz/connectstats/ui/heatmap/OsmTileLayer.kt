@@ -20,7 +20,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.pow
 
-internal enum class BaseMapStyle { STREETS, DARK, NONE }
+internal enum class BaseMapStyle { STREETS, DARK, TOPO, NONE }
 
 internal const val OSM_USER_AGENT = "Overprint/1.0 (Android; OSM tiles)"
 
@@ -47,7 +47,7 @@ internal fun OsmTileLayer(
     val context = LocalContext.current
     val density = LocalDensity.current
     val filter = when {
-        style == BaseMapStyle.DARK -> null
+        style == BaseMapStyle.DARK || style == BaseMapStyle.TOPO -> null
         dimForDarkTheme -> ColorFilter.colorMatrix(ColorMatrix().apply { setToScale(0.72f, 0.74f, 0.82f, 1f) })
         else -> null
     }
@@ -78,7 +78,8 @@ internal fun OsmTileLayer(
 
 private fun visibleTiles(camera: MapCamera, viewport: IntSize, style: BaseMapStyle): List<VisibleTile> {
     val z = camera.zoom.coerceIn(MIN_MAP_ZOOM, MAX_MAP_ZOOM)
-    val zInt = z.toInt().coerceIn(2, 18)
+    val maxZ = if (style == BaseMapStyle.TOPO) 17 else 18
+    val zInt = z.toInt().coerceIn(2, maxZ)
     val draw = (MAP_TILE_SIZE * 2.0.pow(z - zInt)).toFloat()
     val cx = lonToX(camera.centerLon, z)
     val cy = latToY(camera.centerLat, z)
@@ -112,5 +113,6 @@ private fun visibleTiles(camera: MapCamera, viewport: IntSize, style: BaseMapSty
 private fun tileUrl(style: BaseMapStyle, z: Int, x: Int, y: Int): String = when (style) {
     BaseMapStyle.STREETS -> "https://tile.openstreetmap.org/$z/$x/$y.png"
     BaseMapStyle.DARK -> "https://basemaps.cartocdn.com/dark_all/$z/$x/$y.png"
+    BaseMapStyle.TOPO -> "https://a.tile.opentopomap.org/$z/$x/$y.png"
     BaseMapStyle.NONE -> ""
 }

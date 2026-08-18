@@ -8,7 +8,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -40,11 +39,11 @@ fun SportAndYearFilters(
     onYear: (Int?) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val years = remember(activities) {
-        activities.map { activityYear(it.startTimeMillis) }.toSet().sortedDescending()
-    }
-    LaunchedEffect(years, year) {
-        if (year != null && year !in years) onYear(null)
+    val years = remember(activities, year) {
+        buildSet {
+            addAll(activities.map { activityYear(it.startTimeMillis) })
+            if (year != null) add(year)
+        }.sortedDescending()
     }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -63,6 +63,8 @@ import net.roz.connectstats.domain.stats.chartSeries
 import net.roz.connectstats.domain.stats.windowedSeries
 import net.roz.connectstats.ui.heatmap.BaseMapStyle
 import net.roz.connectstats.ui.heatmap.MapCamera
+import net.roz.connectstats.ui.heatmap.MapLayerMenu
+import net.roz.connectstats.ui.heatmap.MapZoomButtons
 import net.roz.connectstats.ui.heatmap.OsmTileLayer
 import net.roz.connectstats.ui.heatmap.fitCamera
 import net.roz.connectstats.ui.heatmap.geoToScreen
@@ -151,7 +153,7 @@ fun GradientTrackMap(
     val maxV = values.filterNotNull().maxOrNull() ?: 1.0
     val colors = MaterialTheme.colorScheme
     val dark = colors.background.luminance() < 0.5f
-    val baseStyle = if (dark) BaseMapStyle.DARK else BaseMapStyle.STREETS
+    var baseStyle by remember { mutableStateOf(BaseMapStyle.STREETS) }
     val trackKey = pts.firstOrNull()?.activityId ?: pts.size
     var camera by remember(trackKey) {
         val lats = pts.mapNotNull { it.latitude }
@@ -199,7 +201,7 @@ fun GradientTrackMap(
             camera = camera,
             viewport = mapSize,
             style = baseStyle,
-            dimForDarkTheme = false,
+            dimForDarkTheme = dark,
         )
         Canvas(Modifier.fillMaxSize()) {
             if (pts.size < 2) return@Canvas
@@ -220,13 +222,23 @@ fun GradientTrackMap(
             drawCircle(Color(0xFF5CE6B8), 10f, pt(pts.first()))
             drawCircle(Color(0xFFE24B4B), 10f, pt(pts.last()))
         }
+        MapLayerMenu(
+            baseStyle = baseStyle,
+            onBaseStyle = { baseStyle = it },
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+        )
+        MapZoomButtons(
+            zoom = camera.zoom,
+            onZoom = { camera = camera.copy(zoom = it) },
+            modifier = Modifier.align(Alignment.BottomEnd).padding(12.dp),
+        )
         Text(
             "Map colour = ${metric.name.lowercase().replace('_', ' ')}",
             style = MaterialTheme.typography.labelSmall,
             color = if (dark) Color.White.copy(alpha = 0.85f) else colors.onSurface,
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(12.dp)
+                .padding(start = 12.dp, bottom = 12.dp, end = 72.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(colors.surface.copy(alpha = 0.82f))
                 .padding(horizontal = 8.dp, vertical = 4.dp),
