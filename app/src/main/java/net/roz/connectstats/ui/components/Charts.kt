@@ -538,7 +538,11 @@ fun BarChart(
 }
 
 @Composable
-fun HistogramChart(bins: List<HistogramBin>, modifier: Modifier = Modifier) {
+fun HistogramChart(
+    bins: List<HistogramBin>,
+    modifier: Modifier = Modifier,
+    xUnit: String = "",
+) {
     val colors = MaterialTheme.colorScheme
     val grid = colors.outline.copy(alpha = 0.45f)
     val labelColor = colors.onSurfaceVariant
@@ -578,7 +582,7 @@ fun HistogramChart(bins: List<HistogramBin>, modifier: Modifier = Modifier) {
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 40.dp, top = 8.dp)) {
+        Row(Modifier.fillMaxWidth().padding(start = 40.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             bins.forEachIndexed { i, b ->
                 Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                     if (i % xStep == 0 || i == bins.lastIndex) {
@@ -593,6 +597,15 @@ fun HistogramChart(bins: List<HistogramBin>, modifier: Modifier = Modifier) {
                     }
                 }
             }
+        }
+        if (xUnit.isNotBlank()) {
+            Text(
+                xUnit,
+                modifier = Modifier.fillMaxWidth().padding(start = 40.dp, top = 2.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = labelColor,
+                textAlign = TextAlign.End,
+            )
         }
     }
 }

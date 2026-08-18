@@ -39,7 +39,13 @@ import java.util.Calendar
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class HistField { DISTANCE, DURATION, HR, PACE, POWER }
+private enum class HistField(val label: String, val unit: String) {
+    DISTANCE("Distance", "km"),
+    DURATION("Duration", "min"),
+    HR("HR", "bpm"),
+    PACE("Pace", "s/km"),
+    POWER("Power", "W"),
+}
 
 @Composable
 fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
@@ -58,10 +64,10 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
     val monthly = remember(filtered, fmt.metric, referenceNow) {
         StatsEngine.monthlyHistory(filtered, now = referenceNow).map { it.copy(value = fmt.kmToChartUnit(it.value)) }
     }
-    val histValues = remember(filtered, hist) {
+    val histValues = remember(filtered, hist, fmt.metric) {
         filtered.mapNotNull {
             when (hist) {
-                HistField.DISTANCE -> it.plausibleDistanceKm()
+                HistField.DISTANCE -> it.plausibleDistanceKm()?.let(fmt::kmToChartUnit)
                 HistField.DURATION -> it.plausibleDurationMinutes()
                 HistField.HR -> it.plausibleAvgHr()
                 HistField.PACE -> it.plausiblePaceSecPerKm()
@@ -69,15 +75,9 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
             }
         }
     }
-    val bins = remember(histValues, hist) {
-        val unit = when (hist) {
-            HistField.DISTANCE -> "km"
-            HistField.DURATION -> "min"
-            HistField.HR -> "bpm"
-            HistField.PACE -> "s"
-            HistField.POWER -> "W"
-        }
-        StatsEngine.histogram(histValues, unitLabel = unit)
+    val histUnit = if (hist == HistField.DISTANCE) fmt.distanceUnit() else hist.unit
+    val bins = remember(histValues, histUnit) {
+        StatsEngine.histogram(histValues, unitLabel = histUnit)
     }
     val scatter = remember(filtered) {
         StatsEngine.scatter(filtered, x = { it.plausibleAvgHr() }, y = { it.plausiblePaceSecPerKm() })
@@ -123,17 +123,21 @@ fun StatsScreen(activities: List<Activity>, fmt: Formatters) {
         ) {
             BarChart(monthly, yFormatter = { String.format(Locale.US, "%.0f", it) })
         }
-        ChartCard(title = "Histogram") {
+        ChartCard(
+            title = "Histogram",
+            subtitle = "${hist.label} (${histUnit})",
+        ) {
             Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 HistField.entries.forEach { f ->
+                    val chipUnit = if (f == HistField.DISTANCE) fmt.distanceUnit() else f.unit
                     FilterChip(
                         selected = hist == f,
                         onClick = { hist = f },
-                        label = { Text(f.name.lowercase()) },
+                        label = { Text("${f.label} ($chipUnit)") },
                     )
                 }
             }
-            HistogramChart(bins)
+            HistogramChart(bins, xUnit = histUnit)
         }
         ChartCard(
             title = "Heart rate vs pace",
