@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Every endpoint the app talks to (sso.garmin.com, diauth.garmin.com,
+  connectapi.garmin.com, connect.garmin.com) is HTTPS, so no cleartext exception is
+  needed. Do not add one: the login POST, the session cookies and the OAuth bearer
+  token all travel over these connections.
+-->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="true">garmin.com</domain>
-        <domain includeSubdomains="true">garmincdn.com</domain>
-    </domain-config>
 </network-security-config>

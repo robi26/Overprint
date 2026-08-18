@@ -39,12 +39,14 @@ fun SettingsScreen(
     onImport: () -> Unit,
     onDemo: () -> Unit,
     onSyncGarmin: () -> Unit,
+    onClearGarmin: () -> Unit,
     onMaxHr: (String) -> Unit,
     onFtp: (String) -> Unit,
 ) {
-    val canSync = settings.garminUsername.isNotBlank() &&
-        settings.garminPassword.isNotBlank() &&
-        !garminSync.running
+    val canSync = settings.hasGarminCredentials && !garminSync.running
+    val hasStoredGarmin = settings.garminUsername.isNotBlank() ||
+        settings.garminPassword.isNotBlank() ||
+        settings.garminToken.isNotBlank()
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -105,6 +107,15 @@ fun SettingsScreen(
             Text(if (garminSync.running) "Syncing from Garmin…" else "Refresh from Garmin")
         }
         GarminSyncStatus(garminSync)
+        if (hasStoredGarmin) {
+            OutlinedButton(
+                onClick = onClearGarmin,
+                enabled = !garminSync.running,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Forget Garmin credentials")
+            }
+        }
         Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import FIT / GPX / TCX") }
         OutlinedButton(onClick = onDemo, modifier = Modifier.fillMaxWidth()) { Text("Load demo activities") }
 

@@ -208,6 +208,7 @@ private fun OverprintNav(
                     onImport = { picker.launch(arrayOf("*/*")) },
                     onDemo = viewModel::loadDemo,
                     onSyncGarmin = viewModel::syncGarmin,
+                    onClearGarmin = viewModel::clearGarminCredentials,
                     onMaxHr = viewModel::setMaxHr,
                     onFtp = viewModel::setFtp,
                 )

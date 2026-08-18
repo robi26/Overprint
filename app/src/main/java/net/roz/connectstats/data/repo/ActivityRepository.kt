@@ -1,5 +1,6 @@
 package net.roz.connectstats.data.repo
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -8,7 +9,9 @@ import net.roz.connectstats.data.local.AppDatabase
 import net.roz.connectstats.data.local.LapEntity
 import net.roz.connectstats.data.local.TrackPointEntity
 import net.roz.connectstats.data.parse.ActivityFileParser
+import net.roz.connectstats.data.prefs.AppSettings
 import net.roz.connectstats.data.prefs.SettingsStore
+import net.roz.connectstats.data.remote.garmin.GarminApiException
 import net.roz.connectstats.data.remote.garmin.GarminClient
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
 import net.roz.connectstats.data.sample.SampleData
@@ -92,13 +95,11 @@ class ActivityRepository(
 
     suspend fun syncGarmin(progress: (GarminSyncProgress) -> Unit = {}) {
         val prefs = settings.settings.first()
-        if (prefs.garminUsername.isBlank() || prefs.garminPassword.isBlank()) {
+        if (!prefs.hasGarminCredentials) {
             error("Enter your Garmin Connect email and password in Settings")
         }
         val client = GarminClient()
-        progress(GarminSyncProgress(running = true, message = "Signing in to Garmin…"))
-        client.login(prefs.garminUsername, prefs.garminPassword)
-        settings.update { it.copy(garminEnabled = true) }
+        authenticate(client, prefs, progress)
         val summaries = mutableListOf<Activity>()
         var start = 0
         val pageSize = 20
@@ -153,6 +154,38 @@ class ActivityRepository(
                 warnings = warnings,
             ),
         )
+    }
+
+    /**
+     * Prefer the stored bearer token so the password is sent to Garmin only when there is
+     * no usable session left. A rejected token is dropped before falling back to SSO.
+     */
+    private suspend fun authenticate(
+        client: GarminClient,
+        prefs: AppSettings,
+        progress: (GarminSyncProgress) -> Unit,
+    ) {
+        if (prefs.garminToken.isNotBlank()) {
+            progress(GarminSyncProgress(running = true, message = "Resuming Garmin session…"))
+            client.resumeSession(prefs.garminToken)
+            val rejected = try {
+                client.listActivities(start = 0, limit = 1)
+                false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: GarminApiException) {
+                // Only an auth rejection means the token is spent. Being offline, a timeout or a
+                // Garmin 5xx must not cost the user their session and force a password replay.
+                if (!e.isAuthFailure) throw e
+                true
+            }
+            if (!rejected) return
+            client.resumeSession("")
+            settings.update { it.copy(garminToken = "") }
+        }
+        progress(GarminSyncProgress(running = true, message = "Signing in to Garmin…"))
+        client.login(prefs.garminUsername, prefs.garminPassword)
+        settings.update { it.copy(garminEnabled = true, garminToken = client.sessionToken) }
     }
 
     suspend fun save(detail: ActivityDetail) {

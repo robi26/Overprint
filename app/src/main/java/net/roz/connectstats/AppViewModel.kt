@@ -121,7 +121,7 @@ class AppViewModel(
     private suspend fun runGarminSync() {
         if (_state.value.garminSync.running) return
         val settings = _state.value.settings
-        if (settings.garminUsername.isBlank() || settings.garminPassword.isBlank()) {
+        if (!settings.hasGarminCredentials) {
             _state.update {
                 it.copy(
                     garminSync = GarminSyncProgress(
@@ -185,6 +185,8 @@ class AppViewModel(
                 it.copy(
                     garminUsername = value.trim(),
                     garminEnabled = value.isNotBlank() && it.garminPassword.isNotBlank(),
+                    // Edited credentials may belong to another account; the old token is void.
+                    garminToken = "",
                 )
             }
         }
@@ -196,7 +198,17 @@ class AppViewModel(
                 it.copy(
                     garminPassword = value,
                     garminEnabled = it.garminUsername.isNotBlank() && value.isNotBlank(),
+                    garminToken = "",
                 )
+            }
+        }
+    }
+
+    fun clearGarminCredentials() {
+        viewModelScope.launch {
+            settingsStore.clearGarminCredentials()
+            _state.update {
+                it.copy(garminSync = GarminSyncProgress(), status = "Garmin credentials cleared")
             }
         }
     }

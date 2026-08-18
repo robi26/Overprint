@@ -40,6 +40,9 @@ class GarminApiException(
     val requestUrl: String,
     detail: String,
 ) : RuntimeException(userMessage(httpCode, requestUrl, detail)) {
+    /** Garmin rejected the credentials, as opposed to being unreachable or broken. */
+    val isAuthFailure: Boolean get() = httpCode == 401 || httpCode == 403
+
     companion object {
         private fun userMessage(code: Int, url: String, detail: String): String = when (code) {
             401, 403 -> "Garmin session expired or access denied (HTTP $code). Sign in again."
@@ -66,7 +69,8 @@ class GarminClient {
     private val htmlClient: OkHttpClient = OkHttpClient.Builder()
         .cookieJar(cookieJar)
         .followRedirects(true)
-        .followSslRedirects(true)
+        // Never let a redirect downgrade an authenticated request to http://.
+        .followSslRedirects(false)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
@@ -76,6 +80,14 @@ class GarminClient {
     private var accessToken: String = ""
     var lastListDiagnostic: String = ""
         private set
+
+    /** Bearer token issued by [login], to be stored encrypted so the password can stay unused. */
+    val sessionToken: String get() = accessToken
+
+    /** Reuse a previously issued bearer token instead of replaying the password. */
+    fun resumeSession(token: String) {
+        accessToken = token
+    }
 
     suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
         if (username.isBlank() || password.isBlank()) {
@@ -107,11 +119,11 @@ class GarminClient {
             if (html.contains("name=\"password\"") && !html.contains("AUTH_SUCCESS")) {
                 error("Garmin login failed. Check email and password.")
             }
-            error("Garmin SSO did not return a service ticket. Extra verification may be required on garmin.com.")
+            error("Garmin SSO did not return a usable service ticket. Extra verification may be required on garmin.com.")
         }
         accessToken = exchangeServiceTicket(ticket).orEmpty()
         if (accessToken.isBlank()) {
-            runCatching { getHtml("https://connect.garmin.com/modern?ticket=$ticket") }
+            runCatching { getHtml(ticketRedeemUrl(ticket)) }
             accessToken = websiteTokenExchange().orEmpty()
         }
         if (accessToken.isBlank()) {
@@ -133,10 +145,15 @@ class GarminClient {
 
     private fun firstNonEmptyList(limit: Int): List<Activity> {
         val attempts = mutableListOf<String>()
+        var authFailure: GarminApiException? = null
+        // Any outcome other than a straight auth rejection - a reachable endpoint, a timeout,
+        // a 5xx - means the session cannot be blamed, so the aggregate error is thrown instead.
+        var sawNonAuthOutcome = false
         for (template in LIST_URLS) {
             val url = listUrl(template, 0, limit)
             try {
                 val body = getJson(url)
+                sawNonAuthOutcome = true
                 val parsed = runCatching { parseActivityList(body) }
                 if (parsed.isFailure) {
                     attempts += "$url -> not JSON (${parsed.exceptionOrNull()?.message})"
@@ -151,11 +168,19 @@ class GarminClient {
                 }
                 attempts += "$url -> JSON with 0 activities (${listDiagnostic(body, 0)})"
             } catch (err: Exception) {
+                if (err is GarminApiException && err.isAuthFailure) {
+                    if (authFailure == null) authFailure = err
+                } else {
+                    sawNonAuthOutcome = true
+                }
                 attempts += "$url -> ${err.message}"
                 Log.i(TAG, "list URL failed $url: ${err.message}")
             }
         }
         lastListDiagnostic = attempts.joinToString(" | ")
+        // Surface an auth rejection as itself so callers can tell a dead session from a dead
+        // endpoint; only the former justifies discarding a stored token.
+        authFailure?.takeIf { !sawNonAuthOutcome }?.let { throw it }
         error("Garmin activity list failed. ${attempts.joinToString(" ")}")
     }
 
@@ -185,15 +210,13 @@ class GarminClient {
                 is JsonArray -> "array size=${root.size}"
                 else -> root::class.simpleName ?: "json"
             }
-        }.getOrElse { "not JSON (${body.take(80)})" }
-        val snippet = body.replace("\n", " ").take(80)
-        return "list $keys, parsed=$parsedCount, url=$lastRequestedUrl, body=$snippet"
+        }.getOrElse { "not JSON" }
+        return "list $keys, parsed=$parsedCount, url=$lastRequestedUrl, body=${bodyShape(body)}"
     }
 
     private fun parseActivityList(body: String): List<Activity> {
         val root = runCatching { json.parseToJsonElement(body) }.getOrElse {
-            val snippet = body.trim().replace("\n", " ").take(100)
-            error("Garmin activity list was not JSON from $lastRequestedUrl ($snippet)")
+            error("Garmin activity list was not JSON from $lastRequestedUrl (${bodyShape(body)})")
         }
         return activityArray(root).mapNotNull { el ->
             val o = el.jsonObject
@@ -288,10 +311,23 @@ class GarminClient {
         .build()
         .toString()
 
-    private fun extractTicket(html: String): String? {
-        val match = Regex("""[?&]ticket=([^"'&\s<]+)""").find(html) ?: return null
-        return match.groupValues[1].takeIf { it.startsWith("ST-") || it.isNotBlank() }
-    }
+    /**
+     * Picks the CAS service ticket out of the SSO response. Only "ST-" values qualify: the
+     * regex matches any `ticket=` parameter anywhere in the page, so without the prefix check
+     * a link or tracking parameter on an error page would be accepted as a credential.
+     */
+    private fun extractTicket(html: String): String? =
+        TICKET_RE.findAll(html)
+            .map { it.groupValues[1] }
+            .firstOrNull { it.startsWith("ST-") }
+
+    private fun ticketRedeemUrl(ticket: String): String = HttpUrl.Builder()
+        .scheme("https")
+        .host("connect.garmin.com")
+        .addPathSegment("modern")
+        .addQueryParameter("ticket", ticket)
+        .build()
+        .toString()
 
     private fun exchangeServiceTicket(ticket: String): String? {
         val attempts = mutableListOf<String>()
@@ -321,7 +357,7 @@ class GarminClient {
                     }
                     attempts += "$clientId: HTTP $code but no access_token"
                 } else {
-                    attempts += "$clientId: HTTP $code ${text.take(80)}"
+                    attempts += "$clientId: HTTP $code (${bodyShape(text)})"
                 }
             }
         }
@@ -432,7 +468,7 @@ class GarminClient {
             lastRequestedUrl = resp.request.url.toString()
             val bytes = resp.body?.bytes() ?: ByteArray(0)
             if (!resp.isSuccessful) {
-                throw GarminApiException(resp.code, lastRequestedUrl, bytes.toString(Charsets.UTF_8).take(200))
+                throw GarminApiException(resp.code, lastRequestedUrl, bodyShape(bytes))
             }
             if (bytes.isEmpty()) error("Empty Garmin response from $lastRequestedUrl")
             if (expectJson) {
@@ -441,7 +477,7 @@ class GarminClient {
                     throw GarminApiException(
                         401,
                         lastRequestedUrl,
-                        "Garmin returned a web page instead of JSON (${trimmed.take(80)})",
+                        "Garmin returned ${bodyShape(bytes)} instead of JSON",
                     )
                 }
             }
@@ -515,6 +551,27 @@ class GarminClient {
         const val TAG = "GarminClient"
         const val USER_AGENT =
             "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        private val TICKET_RE = Regex("""[?&]ticket=([^"'&\s<]+)""")
+
+        /**
+         * Describes a response body for logs and error text without reproducing it. Bodies
+         * carry activity names and locations, and on the auth endpoints they may carry token
+         * material, none of which belongs in logcat or on screen.
+         */
+        private fun bodyShape(bytes: ByteArray): String {
+            val head = bytes.take(64).toByteArray().toString(Charsets.UTF_8).trimStart().firstOrNull()
+            val kind = when {
+                bytes.isEmpty() -> "empty response"
+                head == '{' -> "a JSON object"
+                head == '[' -> "a JSON array"
+                head == '<' -> "an HTML/XML page"
+                else -> "a non-JSON response"
+            }
+            return "$kind, ${bytes.size} bytes"
+        }
+
+        private fun bodyShape(body: String): String = bodyShape(body.toByteArray(Charsets.UTF_8))
+
         private const val DI_TOKEN_URL = "https://diauth.garmin.com/di-oauth2-service/oauth/token"
         private const val DI_GRANT_TYPE =
             "https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket"
