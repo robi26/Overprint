@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityType
+import net.roz.connectstats.ui.common.icon
 import net.roz.connectstats.ui.settings.GarminSyncStatus
 import net.roz.connectstats.ui.theme.toComposeColor
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
@@ -109,7 +110,12 @@ fun ActivityRow(activity: Activity, fmt: Formatters, onClick: () -> Unit) {
             Modifier.size(44.dp).clip(CircleShape).background(activity.type.colorArgb.toComposeColor()),
             contentAlignment = Alignment.Center,
         ) {
-            Text(activity.type.displayName.take(1), color = Color.White, fontWeight = FontWeight.Bold)
+            Icon(
+                activity.type.icon(),
+                contentDescription = activity.type.displayName,
+                tint = Color.White,
+                modifier = Modifier.size(22.dp),
+            )
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
