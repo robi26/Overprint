@@ -12,7 +12,7 @@ import java.nio.ByteOrder
 import kotlin.math.pow
 
 /**
- * Decoder for Garmin FIT activity files. Covers the messages ConnectStats uses:
+ * Decoder for Garmin FIT activity files. Covers the messages used for summaries:
  * file_id, session, lap, record, activity, event.
  */
 object FitParser {

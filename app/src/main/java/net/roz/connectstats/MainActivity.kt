@@ -40,7 +40,7 @@ import net.roz.connectstats.ui.heatmap.HeatmapScreen
 import net.roz.connectstats.ui.more.MoreScreen
 import net.roz.connectstats.ui.settings.SettingsScreen
 import net.roz.connectstats.ui.stats.StatsScreen
-import net.roz.connectstats.ui.theme.ConnectStatsTheme
+import net.roz.connectstats.ui.theme.OverprintTheme
 import net.roz.connectstats.ui.theme.DarkWindowArgb
 import net.roz.connectstats.ui.theme.LightWindowArgb
 import net.roz.connectstats.ui.theme.resolvedDarkTheme
@@ -57,8 +57,8 @@ class MainActivity : ComponentActivity() {
             SideEffect {
                 window.setBackgroundDrawable(ColorDrawable(if (dark) DarkWindowArgb else LightWindowArgb))
             }
-            ConnectStatsTheme(darkTheme = dark) {
-                ConnectStatsNav(viewModel) { bytes, name -> viewModel.importFile(bytes, name) }
+            OverprintTheme(darkTheme = dark) {
+                OverprintNav(viewModel) { bytes, name -> viewModel.importFile(bytes, name) }
             }
         }
     }
@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ConnectStatsNav(
+private fun OverprintNav(
     viewModel: AppViewModel,
     onImportBytes: (ByteArray, String) -> Unit,
 ) {
@@ -98,7 +98,7 @@ private fun ConnectStatsNav(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(titles[route] ?: "ConnectStats") },
+                title = { Text(titles[route] ?: "Overprint") },
                 navigationIcon = {
                     if (showBack) {
                         IconButton(onClick = {

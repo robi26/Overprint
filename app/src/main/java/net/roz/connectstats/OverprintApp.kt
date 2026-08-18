@@ -6,7 +6,7 @@ import net.roz.connectstats.data.local.AppDatabase
 import net.roz.connectstats.data.prefs.SettingsStore
 import net.roz.connectstats.data.repo.ActivityRepository
 
-class ConnectStatsApp : Application() {
+class OverprintApp : Application() {
     lateinit var database: AppDatabase
         private set
     lateinit var settings: SettingsStore
@@ -25,7 +25,7 @@ class ConnectStatsApp : Application() {
     }
 
     companion object {
-        lateinit var instance: ConnectStatsApp
+        lateinit var instance: OverprintApp
             private set
     }
 }

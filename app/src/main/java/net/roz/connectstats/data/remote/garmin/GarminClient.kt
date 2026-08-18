@@ -31,9 +31,9 @@ import java.util.concurrent.TimeUnit
 import java.util.zip.ZipInputStream
 
 /**
- * Garmin Connect website client, matching the iOS SSO path in GCGarminLoginSSO:
- * GET sso/signin → POST username/password → GET connect.garmin.com/modern
- * (cookie jar), then activity list + FIT download.
+ * Garmin Connect website client:
+ * GET sso/signin → POST username/password → token exchange,
+ * then activity list + FIT download.
  */
 class GarminApiException(
     val httpCode: Int,
@@ -95,7 +95,7 @@ class GarminClient {
         }
         cookieJar.clear()
         val ssoUrl = ssoSignInUrl()
-        val signInPage = getHtml(ssoUrl, referer = "https://connectstats.app")
+        val signInPage = getHtml(ssoUrl, referer = "https://connect.garmin.com/modern")
         val form = FormBody.Builder()
         hiddenInputs(signInPage).forEach { (name, value) -> form.add(name, value) }
         form.add("username", username)

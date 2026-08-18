@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ConnectStats"
+rootProject.name = "Overprint"
 include(":app")
