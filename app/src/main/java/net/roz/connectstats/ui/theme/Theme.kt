@@ -55,7 +55,7 @@ fun AppSettings.resolvedDarkTheme(systemDark: Boolean = false): Boolean = when (
 }
 
 @Composable
-fun ConnectStatsTheme(
+fun OverprintTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {

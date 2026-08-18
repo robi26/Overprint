@@ -79,7 +79,7 @@ fun SettingsScreen(
         }
 
         Text("Garmin Connect", style = MaterialTheme.typography.titleMedium)
-        Text("Same as the iOS app: email and password are sent to Garmin SSO, then activities are downloaded.")
+        Text("Sign in with your Garmin email and password. Overprint downloads your activities from Garmin Connect.")
         OutlinedTextField(
             value = settings.garminUsername,
             onValueChange = onGarminUsername,
@@ -129,8 +129,7 @@ fun SettingsScreen(
         }
 
         Text("About", style = MaterialTheme.typography.titleMedium)
-        Text("Android port of ConnectStats by Brice Rosenzweig (MIT). Original: github.com/roznet/connectstats — ro-z.net/connectstats")
-        Text("This app does not record workouts. It displays data you import or download from Garmin Connect. Not affiliated with Garmin or Withings.")
+        Text("Overprint shows activities you import or download from Garmin Connect. It does not record workouts. Not affiliated with Garmin.")
     }
 }
 

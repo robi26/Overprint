@@ -3,6 +3,7 @@ package net.roz.connectstats.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,9 +19,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,10 +35,13 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import net.roz.connectstats.domain.model.ChartMetric
@@ -44,6 +50,13 @@ import net.roz.connectstats.domain.model.TrackPoint
 import net.roz.connectstats.domain.stats.HistogramBin
 import net.roz.connectstats.domain.stats.ScatterPoint
 import net.roz.connectstats.domain.stats.TrendPoint
+import net.roz.connectstats.ui.heatmap.BaseMapStyle
+import net.roz.connectstats.ui.heatmap.MapCamera
+import net.roz.connectstats.ui.heatmap.OsmTileLayer
+import net.roz.connectstats.ui.heatmap.fitCamera
+import net.roz.connectstats.ui.heatmap.geoToScreen
+import net.roz.connectstats.ui.heatmap.pan
+import net.roz.connectstats.ui.heatmap.zoomBy
 import net.roz.connectstats.ui.theme.toComposeColor
 import java.util.Locale
 import kotlin.math.floor
@@ -127,50 +140,80 @@ fun GradientTrackMap(
     metric: MapMetric,
     modifier: Modifier = Modifier.height(240.dp),
 ) {
-    val pts = track.filter { it.latitude != null && it.longitude != null }
+    val pts = remember(track) { track.filter { it.latitude != null && it.longitude != null } }
     val values = pts.map { it.valueOf(metric) }
     val minV = values.filterNotNull().minOrNull() ?: 0.0
     val maxV = values.filterNotNull().maxOrNull() ?: 1.0
     val colors = MaterialTheme.colorScheme
+    val dark = colors.background.luminance() < 0.5f
+    val baseStyle = if (dark) BaseMapStyle.DARK else BaseMapStyle.STREETS
+    var camera by remember { mutableStateOf(MapCamera(47.3769, 8.5417, 13.0)) }
+    var mapSize by remember { mutableStateOf(IntSize.Zero) }
+    val cameraState = rememberUpdatedState(camera)
+
+    LaunchedEffect(pts, mapSize.width, mapSize.height) {
+        if (pts.size < 2 || mapSize.width < 8 || mapSize.height < 8) return@LaunchedEffect
+        camera = fitCamera(
+            minLat = pts.minOf { it.latitude!! },
+            maxLat = pts.maxOf { it.latitude!! },
+            minLon = pts.minOf { it.longitude!! },
+            maxLon = pts.maxOf { it.longitude!! },
+            width = mapSize.width.toFloat(),
+            height = mapSize.height.toFloat(),
+        )
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(colors.surfaceVariant),
+            .background(colors.surfaceVariant)
+            .onSizeChanged { mapSize = it }
+            .pointerInput(pts) {
+                detectTransformGestures { centroid, panChange, zoom, _ ->
+                    val w = size.width.toFloat().coerceAtLeast(1f)
+                    val h = size.height.toFloat().coerceAtLeast(1f)
+                    var next = cameraState.value.zoomBy(zoom, centroid.x, centroid.y, w, h)
+                    next = next.pan(panChange.x, panChange.y)
+                    camera = next
+                }
+            },
     ) {
-        Canvas(Modifier.fillMaxSize().padding(16.dp)) {
+        OsmTileLayer(
+            camera = camera,
+            viewport = mapSize,
+            style = baseStyle,
+            dimForDarkTheme = false,
+        )
+        Canvas(Modifier.fillMaxSize()) {
             if (pts.size < 2) return@Canvas
-            val lats = pts.map { it.latitude!! }
-            val lons = pts.map { it.longitude!! }
-            val minLat = lats.min(); val maxLat = lats.max()
-            val minLon = lons.min(); val maxLon = lons.max()
-            val latSpan = (maxLat - minLat).coerceAtLeast(1e-5)
-            val lonSpan = (maxLon - minLon).coerceAtLeast(1e-5)
-            val pad = 8f
-            fun x(lon: Double) = pad + ((lon - minLon) / lonSpan * (size.width - 2 * pad)).toFloat()
-            fun y(lat: Double) = pad + ((maxLat - lat) / latSpan * (size.height - 2 * pad)).toFloat()
+            fun pt(p: TrackPoint) = camera.geoToScreen(p.latitude!!, p.longitude!!, size.width, size.height)
             for (i in 1 until pts.size) {
-                val a = pts[i - 1]; val b = pts[i]
+                val a = pts[i - 1]
+                val b = pts[i]
                 val v = b.valueOf(metric) ?: a.valueOf(metric)
                 val t = if (v == null || maxV == minV) 0.5f else ((v - minV) / (maxV - minV)).toFloat()
                 drawLine(
                     color = metricColor(t),
-                    start = Offset(x(a.longitude!!), y(a.latitude!!)),
-                    end = Offset(x(b.longitude!!), y(b.latitude!!)),
+                    start = pt(a),
+                    end = pt(b),
                     strokeWidth = 7f,
                     cap = StrokeCap.Round,
                 )
             }
-            val start = pts.first()
-            val end = pts.last()
-            drawCircle(Color(0xFF5CE6B8), 10f, Offset(x(start.longitude!!), y(start.latitude!!)))
-            drawCircle(Color(0xFFE24B4B), 10f, Offset(x(end.longitude!!), y(end.latitude!!)))
+            drawCircle(Color(0xFF5CE6B8), 10f, pt(pts.first()))
+            drawCircle(Color(0xFFE24B4B), 10f, pt(pts.last()))
         }
         Text(
             "Map colour = ${metric.name.lowercase().replace('_', ' ')}",
             style = MaterialTheme.typography.labelSmall,
-            color = colors.onSurfaceVariant,
-            modifier = Modifier.align(Alignment.BottomStart).padding(12.dp),
+            color = if (dark) Color.White.copy(alpha = 0.85f) else colors.onSurface,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(12.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(colors.surface.copy(alpha = 0.82f))
+                .padding(horizontal = 8.dp, vertical = 4.dp),
         )
     }
 }
