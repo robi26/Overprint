@@ -24,7 +24,7 @@ class StatsEngineTest {
     @Test
     fun bestRollingFindsFastestKilometre() {
         var dist = 0.0
-        val track = (0..200).map { i ->
+        val track = (0..400).map { i ->
             val speed = if (i in 40..80) 4.0 else 3.0
             dist += speed
             TrackPoint(
@@ -161,7 +161,7 @@ class StatsEngineTest {
         }
         val fixed = sanitizeFitUnits(track)
         assertEquals(3.0, fixed.first().speedMps!!, 0.01)
-        assertEquals(15.6, fixed.last().speedMps!!, 0.01)
+        assertEquals(13.8, fixed.last().speedMps!!, 0.01)
         assertEquals(340.0, fixed.first().altitudeMeters!!, 0.1)
         assertEquals(376.0, fixed.last().altitudeMeters!!, 0.1)
         assertEquals(10.8, fixed.first().chartValue(ChartMetric.SPEED)!!, 0.1)
