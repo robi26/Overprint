@@ -5,6 +5,10 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val releaseStoreFilePath = System.getenv("RELEASE_STORE_FILE")
+    ?: project.findProperty("RELEASE_STORE_FILE") as String?
+val releaseStoreFile = releaseStoreFilePath?.let { file(it) }?.takeIf { it.isFile }
+
 android {
     namespace = "net.roz.connectstats"
     compileSdk = 35
@@ -18,6 +22,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            if (releaseStoreFile != null) {
+                storeFile = releaseStoreFile
+                storePassword = System.getenv("RELEASE_STORE_PASSWORD")
+                    ?: project.findProperty("RELEASE_STORE_PASSWORD") as String?
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                    ?: project.findProperty("RELEASE_KEY_ALIAS") as String?
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+                    ?: project.findProperty("RELEASE_KEY_PASSWORD") as String?
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -25,6 +43,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = if (releaseStoreFile != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -55,6 +78,11 @@ kotlin {
 androidComponents {
     beforeVariants(selector().all()) { variant ->
         variant.enableAndroidTest = false
+    }
+    onVariants { variant ->
+        variant.outputs.forEach { output ->
+            output.outputFileName.set("overprint.apk")
+        }
     }
 }
 
