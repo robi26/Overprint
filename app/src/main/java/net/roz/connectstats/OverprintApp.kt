@@ -3,6 +3,7 @@ package net.roz.connectstats
 import android.app.Application
 import androidx.room.Room
 import net.roz.connectstats.data.local.AppDatabase
+import net.roz.connectstats.data.local.MIGRATION_1_2
 import net.roz.connectstats.data.prefs.SettingsStore
 import net.roz.connectstats.data.repo.ActivityRepository
 
@@ -18,6 +19,7 @@ class OverprintApp : Application() {
         super.onCreate()
         instance = this
         database = Room.databaseBuilder(this, AppDatabase::class.java, "connectstats.db")
+            .addMigrations(MIGRATION_1_2)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
         settings = SettingsStore(this)

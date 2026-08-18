@@ -38,6 +38,7 @@ data class UiState(
     val calDay: Int? = Calendar.getInstance().get(Calendar.DAY_OF_MONTH),
     val gpsTracks: List<GpsTrack> = emptyList(),
     val gpsTracksLoading: Boolean = false,
+    val deletedActivities: List<Activity> = emptyList(),
 )
 
 class AppViewModel(
@@ -51,11 +52,16 @@ class AppViewModel(
 
     init {
         viewModelScope.launch {
-            runCatching { repo.loadDemoIfEmpty() }
+            runCatching { repo.removeDemoActivities() }
         }
         viewModelScope.launch {
             repo.activities.collect { acts ->
                 _state.update { it.copy(activities = acts).withFilter() }
+            }
+        }
+        viewModelScope.launch {
+            repo.deletedActivities.collect { acts ->
+                _state.update { it.copy(deletedActivities = acts) }
             }
         }
         viewModelScope.launch {
@@ -89,6 +95,17 @@ class AppViewModel(
 
     fun closeDetail() {
         _state.update { it.copy(selected = null) }
+    }
+
+    fun markDeleted(id: String) {
+        viewModelScope.launch {
+            repo.markDeleted(id)
+            _state.update { it.copy(selected = null, status = "Activity removed") }
+        }
+    }
+
+    fun restoreDeleted(id: String) {
+        viewModelScope.launch { repo.restore(id) }
     }
 
     fun loadGpsTracks(activityIds: List<String>) {
@@ -164,13 +181,6 @@ class AppViewModel(
         }
     }
 
-    fun loadDemo() {
-        viewModelScope.launch {
-            repo.reloadDemo()
-            _state.update { it.copy(status = "Demo activities loaded") }
-        }
-    }
-
     fun setMetric(metric: Boolean) {
         viewModelScope.launch { settingsStore.update { it.copy(metric = metric) } }
     }
@@ -180,12 +190,13 @@ class AppViewModel(
     }
 
     fun setGarminUsername(value: String) {
+        val trimmed = value.trim()
         viewModelScope.launch {
-            settingsStore.update {
-                it.copy(
-                    garminUsername = value.trim(),
-                    garminEnabled = value.isNotBlank() && it.garminPassword.isNotBlank(),
-                    // Edited credentials may belong to another account; the old token is void.
+            settingsStore.update { current ->
+                if (current.garminUsername == trimmed) current
+                else current.copy(
+                    garminUsername = trimmed,
+                    garminEnabled = trimmed.isNotBlank() && current.garminPassword.isNotBlank(),
                     garminToken = "",
                 )
             }
@@ -194,13 +205,31 @@ class AppViewModel(
 
     fun setGarminPassword(value: String) {
         viewModelScope.launch {
-            settingsStore.update {
-                it.copy(
+            settingsStore.update { current ->
+                if (current.garminPassword == value) current
+                else current.copy(
                     garminPassword = value,
-                    garminEnabled = it.garminUsername.isNotBlank() && value.isNotBlank(),
+                    garminEnabled = current.garminUsername.isNotBlank() && value.isNotBlank(),
                     garminToken = "",
                 )
             }
+        }
+    }
+
+    fun saveGarminAndSync(username: String, password: String) {
+        viewModelScope.launch {
+            val trimmed = username.trim()
+            settingsStore.update { current ->
+                current.copy(
+                    garminUsername = trimmed,
+                    garminPassword = password,
+                    garminEnabled = trimmed.isNotBlank() && password.isNotBlank(),
+                    garminToken = if (trimmed != current.garminUsername || password != current.garminPassword) {
+                        ""
+                    } else current.garminToken,
+                )
+            }
+            runGarminSync()
         }
     }
 

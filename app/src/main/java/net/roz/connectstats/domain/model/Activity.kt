@@ -26,6 +26,7 @@ data class Activity(
     val deviceName: String?,
     val hasTrack: Boolean,
     val notes: String? = null,
+    val deleted: Boolean = false,
 ) {
     val endTimeMillis: Long get() = startTimeMillis + (durationSeconds * 1000).toLong()
     val paceSecPerKm: Double? get() =

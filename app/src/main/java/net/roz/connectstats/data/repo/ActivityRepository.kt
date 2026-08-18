@@ -14,7 +14,6 @@ import net.roz.connectstats.data.prefs.SettingsStore
 import net.roz.connectstats.data.remote.garmin.GarminApiException
 import net.roz.connectstats.data.remote.garmin.GarminClient
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
-import net.roz.connectstats.data.sample.SampleData
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityDetail
 import net.roz.connectstats.domain.model.ActivityType
@@ -34,6 +33,10 @@ class ActivityRepository(
     private val settings: SettingsStore,
 ) {
     val activities: Flow<List<Activity>> = db.activities().observeActivities().map { list ->
+        list.map { it.toModel() }
+    }
+
+    val deletedActivities: Flow<List<Activity>> = db.activities().observeDeleted().map { list ->
         list.map { it.toModel() }
     }
 
@@ -83,18 +86,9 @@ class ActivityRepository(
         return detail.activity
     }
 
-    suspend fun loadDemoIfEmpty() {
-        if (db.activities().count() > 0) return
-        SampleData.catalog().forEach { save(it) }
-        settings.update { it.copy(demoLoaded = true) }
-    }
-
-    suspend fun reloadDemo() {
-        db.tracks().clear()
-        db.laps().clear()
-        db.activities().clear()
-        SampleData.catalog().forEach { save(it) }
-        settings.update { it.copy(demoLoaded = true) }
+    suspend fun removeDemoActivities() {
+        db.activities().idsBySource(DataSource.DEMO.name).forEach { delete(it) }
+        settings.update { it.copy(demoLoaded = false) }
     }
 
     suspend fun syncGarmin(progress: (GarminSyncProgress) -> Unit = {}) {
@@ -126,8 +120,10 @@ class ActivityRepository(
         if (summaries.isEmpty()) {
             error("Garmin returned 0 activities (${client.lastListDiagnostic}).")
         }
+        val skip = db.activities().deletedIds().toHashSet()
         val warnings = mutableListOf<String>()
         summaries.forEachIndexed { index, summary ->
+            if (summary.id in skip) return@forEachIndexed
             progress(
                 GarminSyncProgress(
                     running = true,
@@ -193,8 +189,10 @@ class ActivityRepository(
     }
 
     suspend fun save(detail: ActivityDetail) {
+        val existing = db.activities().byId(detail.activity.id)
+        if (existing?.deleted == true) return
         db.replaceDetail(
-            activity = detail.activity.toEntity(),
+            activity = detail.activity.copy(deleted = false).toEntity(),
             track = detail.track.map { it.toEntity() },
             laps = detail.laps.map { it.toEntity() },
         )
@@ -203,6 +201,14 @@ class ActivityRepository(
     suspend fun rename(id: String, name: String) {
         val current = db.activities().byId(id) ?: return
         db.activities().upsert(current.copy(name = name))
+    }
+
+    suspend fun markDeleted(id: String) {
+        db.activities().markDeleted(id)
+    }
+
+    suspend fun restore(id: String) {
+        db.activities().restore(id)
     }
 
     suspend fun delete(id: String) {
@@ -224,7 +230,7 @@ private fun ActivityEntity.toModel() = sanitizeActivity(
         id, externalId, DataSource.valueOf(source), name, ActivityType.fromKey(type),
         startTimeMillis, location, distanceMeters, durationSeconds, movingSeconds,
         elevationGainMeters, calories, avgHeartRate, maxHeartRate, avgSpeedMps, maxSpeedMps,
-        avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude, deviceName, hasTrack, notes,
+        avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude, deviceName, hasTrack, notes, deleted,
     ),
 )
 
@@ -232,7 +238,7 @@ private fun Activity.toEntity() = ActivityEntity(
     id, externalId, source.name, name, type.key, startTimeMillis, location, distanceMeters,
     durationSeconds, movingSeconds, elevationGainMeters, calories, avgHeartRate, maxHeartRate,
     avgSpeedMps, maxSpeedMps, avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude,
-    deviceName, hasTrack, notes,
+    deviceName, hasTrack, notes, deleted,
 )
 
 private fun TrackPointEntity.toModel() = TrackPoint(

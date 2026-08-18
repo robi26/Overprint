@@ -78,7 +78,7 @@ fun ActivitiesScreen(
         GarminSyncStatus(garminSync, Modifier.padding(horizontal = 16.dp))
         if (activities.isEmpty()) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                Text("No activities yet.\nOpen Settings to load demo data, import FIT files, or connect Garmin.")
+                Text("No activities yet.\nOpen Settings to import FIT files or connect Garmin.")
             }
         } else {
             LazyColumn(

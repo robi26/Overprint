@@ -15,9 +15,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -26,9 +28,13 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -98,6 +104,7 @@ private fun OverprintNav(
     )
     val moreRoutes = setOf("more", "heatmap", "settings")
     val showBack = route == "detail" || route == "heatmap" || route == "settings"
+    var confirmDelete by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -124,6 +131,11 @@ private fun OverprintNav(
                             } else {
                                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh from Garmin")
                             }
+                        }
+                    }
+                    if (route == "detail" && state.selected != null) {
+                        IconButton(onClick = { confirmDelete = true }) {
+                            Icon(Icons.Outlined.Delete, contentDescription = "Delete activity")
                         }
                     }
                 },
@@ -160,6 +172,27 @@ private fun OverprintNav(
             }
         },
     ) { padding ->
+        if (confirmDelete) {
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false },
+                title = { Text("Delete activity?") },
+                text = {
+                    Text("It will disappear from lists, stats, and maps. Garmin sync will not bring it back. You can restore it in Settings.")
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            state.selected?.activity?.id?.let(viewModel::markDeleted)
+                            confirmDelete = false
+                            nav.popBackStack()
+                        },
+                    ) { Text("Delete") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                },
+            )
+        }
         NavHost(nav, startDestination = "activities", modifier = Modifier.padding(padding)) {
             composable("activities") {
                 ActivitiesScreen(
@@ -223,11 +256,12 @@ private fun OverprintNav(
                     onGarminUsername = viewModel::setGarminUsername,
                     onGarminPassword = viewModel::setGarminPassword,
                     onImport = { picker.launch(arrayOf("*/*")) },
-                    onDemo = viewModel::loadDemo,
-                    onSyncGarmin = viewModel::syncGarmin,
+                    onSyncGarmin = viewModel::saveGarminAndSync,
                     onClearGarmin = viewModel::clearGarminCredentials,
                     onMaxHr = viewModel::setMaxHr,
                     onFtp = viewModel::setFtp,
+                    deletedActivities = state.deletedActivities,
+                    onRestore = viewModel::restoreDeleted,
                 )
             }
             composable("detail") {

@@ -5,8 +5,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -17,15 +19,33 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import net.roz.connectstats.data.prefs.AppSettings
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
+import net.roz.connectstats.domain.model.Activity
 
 @Composable
 fun SettingsScreen(
@@ -37,18 +57,45 @@ fun SettingsScreen(
     onGarminUsername: (String) -> Unit,
     onGarminPassword: (String) -> Unit,
     onImport: () -> Unit,
-    onDemo: () -> Unit,
-    onSyncGarmin: () -> Unit,
+    onSyncGarmin: (String, String) -> Unit,
     onClearGarmin: () -> Unit,
     onMaxHr: (String) -> Unit,
     onFtp: (String) -> Unit,
+    deletedActivities: List<Activity> = emptyList(),
+    onRestore: (String) -> Unit = {},
 ) {
-    val canSync = settings.hasGarminCredentials && !garminSync.running
+    var username by remember { mutableStateOf(settings.garminUsername) }
+    var password by remember { mutableStateOf(settings.garminPassword) }
+    var emailFocused by remember { mutableStateOf(false) }
+    var passwordFocused by remember { mutableStateOf(false) }
+    val passwordFocus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val latestUser = rememberUpdatedState(username)
+    val latestPass = rememberUpdatedState(password)
+    LaunchedEffect(settings.garminUsername) {
+        if (!emailFocused) username = settings.garminUsername
+    }
+    LaunchedEffect(settings.garminPassword) {
+        if (!passwordFocused) password = settings.garminPassword
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            onGarminUsername(latestUser.value)
+            onGarminPassword(latestPass.value)
+        }
+    }
+    val canSync = username.isNotBlank() && password.isNotBlank() && !garminSync.running
     val hasStoredGarmin = settings.garminUsername.isNotBlank() ||
         settings.garminPassword.isNotBlank() ||
-        settings.garminToken.isNotBlank()
+        settings.garminToken.isNotBlank() ||
+        username.isNotBlank() ||
+        password.isNotBlank()
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        Modifier
+            .fillMaxSize()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -83,24 +130,54 @@ fun SettingsScreen(
         Text("Garmin Connect", style = MaterialTheme.typography.titleMedium)
         Text("Sign in with your Garmin email and password. Overprint downloads your activities from Garmin Connect.")
         OutlinedTextField(
-            value = settings.garminUsername,
-            onValueChange = onGarminUsername,
+            value = username,
+            onValueChange = { username = it },
             label = { Text("Garmin email") },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentType = ContentType.EmailAddress + ContentType.Username }
+                .onFocusChanged { focus ->
+                    emailFocused = focus.isFocused
+                    if (!focus.isFocused) onGarminUsername(username)
+                },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+                keyboardType = KeyboardType.Email,
+                imeAction = ImeAction.Next,
+            ),
+            keyboardActions = KeyboardActions(onNext = { passwordFocus.requestFocus() }),
         )
         OutlinedTextField(
-            value = settings.garminPassword,
-            onValueChange = onGarminPassword,
+            value = password,
+            onValueChange = { password = it },
             label = { Text("Garmin password") },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(passwordFocus)
+                .semantics { contentType = ContentType.Password }
+                .onFocusChanged { focus ->
+                    passwordFocused = focus.isFocused
+                    if (!focus.isFocused) onGarminPassword(password)
+                },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            keyboardOptions = KeyboardOptions(
+                capitalization = KeyboardCapitalization.None,
+                autoCorrectEnabled = false,
+                keyboardType = KeyboardType.Password,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(
+                onDone = {
+                    onGarminPassword(password)
+                    focusManager.clearFocus()
+                },
+            ),
         )
         Button(
-            onClick = onSyncGarmin,
+            onClick = { onSyncGarmin(username, password) },
             enabled = canSync,
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -109,7 +186,11 @@ fun SettingsScreen(
         GarminSyncStatus(garminSync)
         if (hasStoredGarmin) {
             OutlinedButton(
-                onClick = onClearGarmin,
+                onClick = {
+                    username = ""
+                    password = ""
+                    onClearGarmin()
+                },
                 enabled = !garminSync.running,
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -117,7 +198,24 @@ fun SettingsScreen(
             }
         }
         Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Import FIT / GPX / TCX") }
-        OutlinedButton(onClick = onDemo, modifier = Modifier.fillMaxWidth()) { Text("Load demo activities") }
+
+        if (deletedActivities.isNotEmpty()) {
+            Text("Deleted activities", style = MaterialTheme.typography.titleMedium)
+            Text("Hidden from lists, stats, and Garmin refresh. Restore to show them again.")
+            deletedActivities.forEach { act ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(act.name, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            act.type.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = { onRestore(act.id) }) { Text("Restore") }
+                }
+            }
+        }
 
         Text("Training zones", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(

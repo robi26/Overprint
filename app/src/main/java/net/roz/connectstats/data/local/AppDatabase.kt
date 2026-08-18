@@ -10,6 +10,8 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
 import androidx.room.Transaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "activities")
@@ -39,6 +41,7 @@ data class ActivityEntity(
     val deviceName: String?,
     val hasTrack: Boolean,
     val notes: String?,
+    val deleted: Boolean = false,
 )
 
 @Entity(
@@ -84,17 +87,23 @@ data class LapEntity(
 
 @Dao
 interface ActivityDao {
-    @Query("SELECT * FROM activities ORDER BY startTimeMillis DESC")
+    @Query("SELECT * FROM activities WHERE deleted = 0 ORDER BY startTimeMillis DESC")
     fun observeActivities(): Flow<List<ActivityEntity>>
 
-    @Query("SELECT * FROM activities ORDER BY startTimeMillis DESC")
+    @Query("SELECT * FROM activities WHERE deleted = 1 ORDER BY startTimeMillis DESC")
+    fun observeDeleted(): Flow<List<ActivityEntity>>
+
+    @Query("SELECT * FROM activities WHERE deleted = 0 ORDER BY startTimeMillis DESC")
     suspend fun all(): List<ActivityEntity>
 
     @Query("SELECT * FROM activities WHERE id = :id")
     suspend fun byId(id: String): ActivityEntity?
 
-    @Query("SELECT * FROM activities WHERE name LIKE '%' || :q || '%' OR location LIKE '%' || :q || '%' OR type LIKE '%' || :q || '%' ORDER BY startTimeMillis DESC")
+    @Query("SELECT * FROM activities WHERE deleted = 0 AND (name LIKE '%' || :q || '%' OR location LIKE '%' || :q || '%' OR type LIKE '%' || :q || '%') ORDER BY startTimeMillis DESC")
     suspend fun search(q: String): List<ActivityEntity>
+
+    @Query("SELECT id FROM activities WHERE deleted = 1")
+    suspend fun deletedIds(): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: ActivityEntity)
@@ -102,8 +111,17 @@ interface ActivityDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entities: List<ActivityEntity>)
 
+    @Query("UPDATE activities SET deleted = 1 WHERE id = :id")
+    suspend fun markDeleted(id: String): Int
+
+    @Query("UPDATE activities SET deleted = 0 WHERE id = :id")
+    suspend fun restore(id: String): Int
+
     @Query("DELETE FROM activities WHERE id = :id")
     suspend fun delete(id: String): Int
+
+    @Query("SELECT id FROM activities WHERE source = :source")
+    suspend fun idsBySource(source: String): List<String>
 
     @Query("DELETE FROM activities")
     suspend fun clear(): Int
@@ -161,7 +179,7 @@ interface LapDao {
 
 @Database(
     entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -176,5 +194,11 @@ abstract class AppDatabase : RoomDatabase() {
         laps().deleteFor(activity.id)
         if (track.isNotEmpty()) tracks().insertAll(track)
         if (laps.isNotEmpty()) laps().insertAll(laps)
+    }
+}
+
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE activities ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
     }
 }
