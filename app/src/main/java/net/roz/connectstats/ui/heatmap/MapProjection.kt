@@ -93,12 +93,20 @@ internal fun MapCamera.zoomBy(factor: Float, focusPx: Float, focusPy: Float, wid
 }
 
 internal fun fitCamera(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, width: Float, height: Float): MapCamera {
-    val centerLat = (minLat + maxLat) / 2
-    val centerLon = (minLon + maxLon) / 2
-    val dx0 = kotlin.math.abs(lonToX(maxLon, 0.0) - lonToX(minLon, 0.0)).coerceAtLeast(8.0)
-    val dy0 = kotlin.math.abs(latToY(minLat, 0.0) - latToY(maxLat, 0.0)).coerceAtLeast(8.0)
-    val zx = ln((width * 0.82) / dx0) / ln(2.0)
-    val zy = ln((height * 0.82) / dy0) / ln(2.0)
-    val zoom = minOf(zx, zy).coerceIn(MIN_MAP_ZOOM, MAX_MAP_ZOOM - 0.5)
+    val padLat = ((maxLat - minLat).coerceAtLeast(0.0) * 0.08).coerceAtLeast(0.0004)
+    val padLon = ((maxLon - minLon).coerceAtLeast(0.0) * 0.08).coerceAtLeast(0.0004)
+    val south = minLat - padLat
+    val north = maxLat + padLat
+    val west = minLon - padLon
+    val east = maxLon + padLon
+    val centerLat = (south + north) / 2
+    val centerLon = (west + east) / 2
+    val w = width.toDouble().coerceAtLeast(1.0)
+    val h = height.toDouble().coerceAtLeast(1.0)
+    val dx0 = kotlin.math.abs(lonToX(east, 0.0) - lonToX(west, 0.0)).coerceAtLeast(1e-9)
+    val dy0 = kotlin.math.abs(latToY(south, 0.0) - latToY(north, 0.0)).coerceAtLeast(1e-9)
+    val zx = ln(w / dx0) / ln(2.0)
+    val zy = ln(h / dy0) / ln(2.0)
+    val zoom = minOf(zx, zy).coerceIn(MIN_MAP_ZOOM, MAX_MAP_ZOOM)
     return MapCamera(centerLat, centerLon, zoom)
 }

@@ -147,11 +147,22 @@ fun GradientTrackMap(
     val colors = MaterialTheme.colorScheme
     val dark = colors.background.luminance() < 0.5f
     val baseStyle = if (dark) BaseMapStyle.DARK else BaseMapStyle.STREETS
-    var camera by remember { mutableStateOf(MapCamera(47.3769, 8.5417, 13.0)) }
+    val trackKey = pts.firstOrNull()?.activityId ?: pts.size
+    var camera by remember(trackKey) {
+        val lats = pts.mapNotNull { it.latitude }
+        val lons = pts.mapNotNull { it.longitude }
+        mutableStateOf(
+            MapCamera(
+                lats.takeIf { it.isNotEmpty() }?.average() ?: 47.3769,
+                lons.takeIf { it.isNotEmpty() }?.average() ?: 8.5417,
+                15.0,
+            ),
+        )
+    }
     var mapSize by remember { mutableStateOf(IntSize.Zero) }
     val cameraState = rememberUpdatedState(camera)
 
-    LaunchedEffect(pts, mapSize.width, mapSize.height) {
+    LaunchedEffect(trackKey, pts.size, mapSize.width, mapSize.height) {
         if (pts.size < 2 || mapSize.width < 8 || mapSize.height < 8) return@LaunchedEffect
         camera = fitCamera(
             minLat = pts.minOf { it.latitude!! },
