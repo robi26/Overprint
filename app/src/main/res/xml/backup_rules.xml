@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 and below. Activity data may be backed up; the DataStore file holding the
+  Garmin secrets may not. The Keystore key never leaves the device, so a restored copy
+  would be undecryptable anyway - this keeps the ciphertext itself off Google's servers.
+-->
+<full-backup-content>
+    <exclude domain="file" path="datastore/" />
+</full-backup-content>
