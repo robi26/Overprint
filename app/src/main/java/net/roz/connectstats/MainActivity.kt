@@ -202,13 +202,16 @@ private fun OverprintNav(
         NavHost(nav, startDestination = "activities", modifier = Modifier.padding(padding)) {
             composable("activities") {
                 ActivitiesScreen(
+                    allActivities = state.activities,
                     activities = state.filtered,
                     query = state.query,
                     typeFilter = state.typeFilter,
+                    yearFilter = state.yearFilter,
                     garminSync = state.garminSync,
                     fmt = state.fmt,
                     onQuery = viewModel::setQuery,
                     onType = viewModel::setType,
+                    onYear = viewModel::setYear,
                     onOpen = {
                         viewModel.open(it)
                         nav.navigate("detail")

@@ -27,6 +27,7 @@ data class UiState(
     val filtered: List<Activity> = emptyList(),
     val query: String = "",
     val typeFilter: ActivityType? = null,
+    val yearFilter: Int? = null,
     val settings: AppSettings = AppSettings(),
     val fmt: Formatters = Formatters(true),
     val refreshing: Boolean = false,
@@ -78,6 +79,10 @@ class AppViewModel(
 
     fun setType(type: ActivityType?) {
         _state.update { it.copy(typeFilter = type).withFilter() }
+    }
+
+    fun setYear(year: Int?) {
+        _state.update { it.copy(yearFilter = year).withFilter() }
     }
 
     fun setMonth(year: Int, month: Int) {
@@ -261,6 +266,7 @@ class AppViewModel(
     private fun UiState.withFilter(): UiState {
         val filtered = activities.filter { a ->
             (typeFilter == null || a.type == typeFilter) &&
+                (yearFilter == null || activityYear(a.startTimeMillis) == yearFilter) &&
                 (query.isBlank() ||
                     a.name.contains(query, true) ||
                     a.location.orEmpty().contains(query, true) ||
@@ -281,6 +287,12 @@ class AppViewModel(
                 val app = OverprintApp.instance
                 return AppViewModel(app.repository, app.settings) as T
             }
+        }
+
+        private fun activityYear(millis: Long): Int {
+            val cal = Calendar.getInstance()
+            cal.timeInMillis = millis
+            return cal.get(Calendar.YEAR)
         }
     }
 }

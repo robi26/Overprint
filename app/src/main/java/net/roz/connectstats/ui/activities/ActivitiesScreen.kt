@@ -15,13 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -36,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import net.roz.connectstats.domain.format.Formatters
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityType
+import net.roz.connectstats.ui.common.SportAndYearFilters
 import net.roz.connectstats.ui.common.icon
 import net.roz.connectstats.ui.settings.GarminSyncStatus
 import net.roz.connectstats.ui.theme.toComposeColor
@@ -43,16 +42,18 @@ import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
 
 @Composable
 fun ActivitiesScreen(
+    allActivities: List<Activity>,
     activities: List<Activity>,
     query: String,
     typeFilter: ActivityType?,
+    yearFilter: Int?,
     garminSync: GarminSyncProgress,
     fmt: Formatters,
     onQuery: (String) -> Unit,
     onType: (ActivityType?) -> Unit,
+    onYear: (Int?) -> Unit,
     onOpen: (Activity) -> Unit,
 ) {
-    val types = listOf(null) + ActivityType.entries
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
             value = query,
@@ -63,18 +64,14 @@ fun ActivitiesScreen(
             singleLine = true,
             shape = RoundedCornerShape(16.dp),
         )
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(types) { t ->
-                FilterChip(
-                    selected = typeFilter == t,
-                    onClick = { onType(t) },
-                    label = { Text(t?.displayName ?: "All") },
-                )
-            }
-        }
+        SportAndYearFilters(
+            activities = allActivities,
+            type = typeFilter,
+            year = yearFilter,
+            onType = onType,
+            onYear = onYear,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
         GarminSyncStatus(garminSync, Modifier.padding(horizontal = 16.dp))
         if (activities.isEmpty()) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
