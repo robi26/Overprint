@@ -1,6 +1,5 @@
 package net.roz.connectstats.data.repo
 
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -11,9 +10,9 @@ import net.roz.connectstats.data.local.TrackPointEntity
 import net.roz.connectstats.data.parse.ActivityFileParser
 import net.roz.connectstats.data.prefs.AppSettings
 import net.roz.connectstats.data.prefs.SettingsStore
-import net.roz.connectstats.data.remote.garmin.GarminApiException
 import net.roz.connectstats.data.remote.garmin.GarminClient
 import net.roz.connectstats.data.remote.garmin.GarminSyncProgress
+import net.roz.connectstats.data.remote.garmin.garminReachedKnownHistory
 import net.roz.connectstats.domain.model.Activity
 import net.roz.connectstats.domain.model.ActivityDetail
 import net.roz.connectstats.domain.model.ActivityType
@@ -98,67 +97,77 @@ class ActivityRepository(
         }
         val client = GarminClient()
         authenticate(client, prefs, progress)
-        val summaries = mutableListOf<Activity>()
+        val skipFetch = (
+            db.activities().deletedIds() + db.activities().idsWithTrack()
+            ).toHashSet()
+        val warnings = mutableListOf<String>()
+        var imported = 0
+        var listed = 0
         var start = 0
         val pageSize = 20
-        progress(GarminSyncProgress(running = true, message = "Listing Garmin activities…"))
+        progress(GarminSyncProgress(running = true, message = "Looking for new Garmin activities…"))
         while (true) {
             progress(
                 GarminSyncProgress(
                     running = true,
-                    message = "Listing Garmin activities…",
-                    current = summaries.size,
+                    message = "Looking for new Garmin activities…",
+                    current = imported,
+                    warnings = warnings.toList(),
                 ),
             )
             val page = client.listActivities(start, pageSize)
             if (page.isEmpty()) break
-            summaries += page
+            listed += page.size
+            if (garminReachedKnownHistory(page.map { it.id }, skipFetch)) break
+            val toFetch = page.filter { it.id !in skipFetch }
+            val batchTotal = imported + toFetch.size
+            toFetch.forEach { summary ->
+                progress(
+                    GarminSyncProgress(
+                        running = true,
+                        message = "Downloading ${summary.name}",
+                        current = imported,
+                        total = batchTotal,
+                        warnings = warnings.toList(),
+                    ),
+                )
+                val detail = runCatching { client.downloadFit(summary.externalId) }
+                    .getOrElse { err ->
+                        warnings += "${summary.name}: ${err.message ?: err.javaClass.simpleName}"
+                        ActivityDetail(summary.copy(hasTrack = false), emptyList(), emptyList())
+                    }
+                save(detail.copy(activity = detail.activity.copy(name = summary.name, location = summary.location)))
+                skipFetch += summary.id
+                imported++
+            }
             if (page.size < pageSize) break
             start += pageSize
             if (start > 2000) break
         }
-        if (summaries.isEmpty()) {
+        if (listed == 0) {
             error("Garmin returned 0 activities (${client.lastListDiagnostic}).")
         }
-        val skip = db.activities().deletedIds().toHashSet()
-        val warnings = mutableListOf<String>()
-        summaries.forEachIndexed { index, summary ->
-            if (summary.id in skip) return@forEachIndexed
-            progress(
-                GarminSyncProgress(
-                    running = true,
-                    message = "Downloading ${summary.name}",
-                    current = index,
-                    total = summaries.size,
-                    warnings = warnings.toList(),
-                ),
-            )
-            val detail = runCatching { client.downloadFit(summary.externalId) }
-                .getOrElse { err ->
-                    warnings += "${summary.name}: ${err.message ?: err.javaClass.simpleName}"
-                    ActivityDetail(summary.copy(hasTrack = false), emptyList(), emptyList())
-                }
-            save(detail.copy(activity = detail.activity.copy(name = summary.name, location = summary.location)))
-        }
-        val failed = warnings.size
-        val summaryText = buildString {
-            append("Imported ${summaries.size} Garmin activities")
-            if (failed > 0) append(" ($failed without FIT track)")
+        val summaryText = when {
+            imported == 0 -> "No new Garmin activities"
+            else -> buildString {
+                append("Imported $imported new Garmin ${if (imported == 1) "activity" else "activities"}")
+                if (warnings.isNotEmpty()) append(" (${warnings.size} without FIT track)")
+            }
         }
         progress(
             GarminSyncProgress(
                 running = false,
                 message = summaryText,
-                current = summaries.size,
-                total = summaries.size,
+                current = imported,
+                total = imported,
                 warnings = warnings,
             ),
         )
     }
 
     /**
-     * Prefer the stored bearer token so the password is sent to Garmin only when there is
-     * no usable session left. A rejected token is dropped before falling back to SSO.
+     * Prefer the stored DI session so the password is sent to Garmin only when there is
+     * no usable access or refresh token left. A rejected session is dropped before SSO.
      */
     private suspend fun authenticate(
         client: GarminClient,
@@ -168,18 +177,12 @@ class ActivityRepository(
         if (prefs.garminToken.isNotBlank()) {
             progress(GarminSyncProgress(running = true, message = "Resuming Garmin session…"))
             client.resumeSession(prefs.garminToken)
-            val rejected = try {
-                client.listActivities(start = 0, limit = 1)
-                false
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: GarminApiException) {
-                // Only an auth rejection means the token is spent. Being offline, a timeout or a
-                // Garmin 5xx must not cost the user their session and force a password replay.
-                if (!e.isAuthFailure) throw e
-                true
+            if (client.probeSession()) return
+            progress(GarminSyncProgress(running = true, message = "Refreshing Garmin session…"))
+            if (client.refreshSession()) {
+                settings.update { it.copy(garminToken = client.sessionToken) }
+                if (client.probeSession()) return
             }
-            if (!rejected) return
             client.resumeSession("")
             settings.update { it.copy(garminToken = "") }
         }

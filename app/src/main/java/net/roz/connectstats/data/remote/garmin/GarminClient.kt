@@ -77,16 +77,74 @@ class GarminClient {
     private var listUrlTemplate: String? = null
     private var fitUrlTemplate: String? = null
     private var lastRequestedUrl: String = ""
-    private var accessToken: String = ""
+    private var session = GarminSession("")
     var lastListDiagnostic: String = ""
         private set
 
-    /** Bearer token issued by [login], to be stored encrypted so the password can stay unused. */
-    val sessionToken: String get() = accessToken
+    /** Encoded DI OAuth session (access + refresh) stored encrypted so the password can stay unused. */
+    val sessionToken: String get() = session.encode()
 
-    /** Reuse a previously issued bearer token instead of replaying the password. */
+    /** Reuse a previously issued bearer/refresh pair instead of replaying the password. */
     fun resumeSession(token: String) {
-        accessToken = token
+        session = GarminSession.decode(token)
+        listUrlTemplate = null
+        fitUrlTemplate = null
+    }
+
+    /**
+     * Checks the stored access token against the Connect API without walking fallback list URLs.
+     * A 401/403/404 means the access token is spent; transport and 5xx errors are thrown so the
+     * caller can keep the session instead of forcing a password login while Garmin is down.
+     */
+    suspend fun probeSession(): Boolean = withContext(Dispatchers.IO) {
+        if (session.isBlank) return@withContext false
+        val url = listUrl(LIST_URLS.first(), 0, 1)
+        try {
+            val body = getJson(url)
+            if (runCatching { parseActivityList(body) }.isSuccess) {
+                listUrlTemplate = LIST_URLS.first()
+            }
+            true
+        } catch (err: GarminApiException) {
+            if (err.isAuthFailure || err.httpCode == 404) false else throw err
+        }
+    }
+
+    /** Exchanges the refresh token for a new access token. Garmin rotates the refresh token. */
+    suspend fun refreshSession(): Boolean = withContext(Dispatchers.IO) {
+        val refresh = session.refreshToken
+        val clientId = session.clientId.ifBlank { GarminSession.clientIdFromJwt(session.accessToken).orEmpty() }
+        if (refresh.isBlank() || clientId.isBlank()) return@withContext false
+        val body = FormBody.Builder()
+            .add("grant_type", "refresh_token")
+            .add("client_id", clientId)
+            .add("refresh_token", refresh)
+            .build()
+        val basic = "Basic " + Base64.encodeToString("$clientId:".toByteArray(), Base64.NO_WRAP)
+        val req = Request.Builder()
+            .url(DI_TOKEN_URL)
+            .post(body)
+            .header("Authorization", basic)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("User-Agent", "GCM-Android-5.23")
+            .header("nk", "NT")
+            .build()
+        val (code, text) = executeRaw(req)
+        if (code in 200..299) {
+            val next = GarminSession.fromTokenResponse(text, clientId)
+                ?: throw GarminApiException(code, DI_TOKEN_URL, "refresh response was not a token")
+            session = next
+            Log.i(TAG, "DI refresh ok, token length=${next.accessToken.length}")
+            return@withContext true
+        }
+        Log.i(TAG, "DI refresh failed: HTTP $code (${bodyShape(text)})")
+        // 401/403/400 (invalid_grant) mean the refresh token is spent. 429/5xx must not
+        // discard it — Garmin being down is not a reason to force a password login.
+        if (code == 429 || code in 500..599) {
+            throw GarminApiException(code, DI_TOKEN_URL, bodyShape(text))
+        }
+        false
     }
 
     suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) {
@@ -94,6 +152,7 @@ class GarminClient {
             error("Enter your Garmin Connect email and password in Settings.")
         }
         cookieJar.clear()
+        session = GarminSession("")
         val ssoUrl = ssoSignInUrl()
         val signInPage = getHtml(ssoUrl, referer = "https://connect.garmin.com/modern")
         val form = FormBody.Builder()
@@ -121,18 +180,19 @@ class GarminClient {
             }
             error("Garmin SSO did not return a usable service ticket. Extra verification may be required on garmin.com.")
         }
-        accessToken = exchangeServiceTicket(ticket).orEmpty()
-        if (accessToken.isBlank()) {
+        val exchanged = exchangeServiceTicket(ticket)
+        if (exchanged != null) session = exchanged
+        if (session.isBlank) {
             runCatching { getHtml(ticketRedeemUrl(ticket)) }
-            accessToken = websiteTokenExchange().orEmpty()
+            websiteTokenExchange()?.let { session = it }
         }
-        if (accessToken.isBlank()) {
+        if (session.isBlank) {
             error(
                 "Garmin login succeeded but no API token was issued. " +
                     (lastListDiagnostic.takeIf { it.isNotBlank() } ?: "Garmin now requires an OAuth token for activity download."),
             )
         }
-        Log.i(TAG, "Garmin SSO login ok, token length=${accessToken.length}")
+        Log.i(TAG, "Garmin SSO login ok, token length=${session.accessToken.length}")
     }
 
     suspend fun listActivities(start: Int = 0, limit: Int = 20): List<Activity> = withContext(Dispatchers.IO) {
@@ -146,9 +206,10 @@ class GarminClient {
     private fun firstNonEmptyList(limit: Int): List<Activity> {
         val attempts = mutableListOf<String>()
         var authFailure: GarminApiException? = null
-        // Any outcome other than a straight auth rejection - a reachable endpoint, a timeout,
-        // a 5xx - means the session cannot be blamed, so the aggregate error is thrown instead.
+        // A timeout or 5xx means the session cannot be blamed. A 404 on a stale proxy URL
+        // does not count: unauthenticated Garmin routes often 404.
         var sawNonAuthOutcome = false
+        var sawSuccessfulJson = false
         for (template in LIST_URLS) {
             val url = listUrl(template, 0, limit)
             try {
@@ -159,6 +220,7 @@ class GarminClient {
                     attempts += "$url -> not JSON (${parsed.exceptionOrNull()?.message})"
                     continue
                 }
+                sawSuccessfulJson = true
                 val activities = parsed.getOrThrow()
                 lastListDiagnostic = listDiagnostic(body, activities.size)
                 Log.i(TAG, lastListDiagnostic)
@@ -168,10 +230,14 @@ class GarminClient {
                 }
                 attempts += "$url -> JSON with 0 activities (${listDiagnostic(body, 0)})"
             } catch (err: Exception) {
-                if (err is GarminApiException && err.isAuthFailure) {
-                    if (authFailure == null) authFailure = err
-                } else {
-                    sawNonAuthOutcome = true
+                when {
+                    err is GarminApiException && err.isAuthFailure -> {
+                        if (authFailure == null) authFailure = err
+                    }
+                    err is GarminApiException && err.httpCode == 404 -> {
+                        // A missing proxy route is not evidence that the bearer token still works.
+                    }
+                    else -> sawNonAuthOutcome = true
                 }
                 attempts += "$url -> ${err.message}"
                 Log.i(TAG, "list URL failed $url: ${err.message}")
@@ -180,7 +246,14 @@ class GarminClient {
         lastListDiagnostic = attempts.joinToString(" | ")
         // Surface an auth rejection as itself so callers can tell a dead session from a dead
         // endpoint; only the former justifies discarding a stored token.
-        authFailure?.takeIf { !sawNonAuthOutcome }?.let { throw it }
+        if (garminListMeansDeadSession(
+                sawSuccessfulJson = sawSuccessfulJson,
+                sawTransportOrServerError = sawNonAuthOutcome,
+                authFailure = authFailure != null,
+            )
+        ) {
+            throw authFailure!!
+        }
         error("Garmin activity list failed. ${attempts.joinToString(" ")}")
     }
 
@@ -329,7 +402,7 @@ class GarminClient {
         .build()
         .toString()
 
-    private fun exchangeServiceTicket(ticket: String): String? {
+    private fun exchangeServiceTicket(ticket: String): GarminSession? {
         val attempts = mutableListOf<String>()
         for (clientId in DI_CLIENT_IDS) {
             for (serviceUrl in DI_SERVICE_URLS) {
@@ -351,7 +424,7 @@ class GarminClient {
                     .build()
                 val (code, text) = executeRaw(req)
                 if (code in 200..299) {
-                    parseAccessToken(text)?.let { token ->
+                    GarminSession.fromTokenResponse(text, clientId)?.let { token ->
                         Log.i(TAG, "DI token ok via $clientId / $serviceUrl")
                         return token
                     }
@@ -366,21 +439,12 @@ class GarminClient {
         return null
     }
 
-    private fun websiteTokenExchange(): String? {
+    private fun websiteTokenExchange(): GarminSession? {
         for (url in WEBSITE_TOKEN_URLS) {
             val body = runCatching { getJson(url) }.getOrNull() ?: continue
-            parseAccessToken(body)?.let { return it }
+            GarminSession.fromTokenResponse(body, "")?.let { return it }
         }
         return null
-    }
-
-    private fun parseAccessToken(body: String): String? {
-        val root = runCatching { json.parseToJsonElement(body) }.getOrNull() as? JsonObject ?: return null
-        val nested = root["data"] as? JsonObject
-        return root.string("access_token")
-            ?: root.string("accessToken")
-            ?: nested?.string("access_token")
-            ?: nested?.string("accessToken")
     }
 
     private fun hiddenInputs(html: String): Map<String, String> {
@@ -446,9 +510,9 @@ class GarminClient {
             .header("Origin", "https://connect.garmin.com")
             .header("Referer", "https://connect.garmin.com/modern/activities")
             .header("Di-Backend", "connectapi.garmin.com")
-            .header("User-Agent", if (accessToken.isNotBlank()) "GCM-Android-5.23" else USER_AGENT)
-        if (accessToken.isNotBlank()) {
-            header("Authorization", "Bearer $accessToken")
+            .header("User-Agent", if (session.accessToken.isNotBlank()) "GCM-Android-5.23" else USER_AGENT)
+        if (session.accessToken.isNotBlank()) {
+            header("Authorization", "Bearer ${session.accessToken}")
         }
         return this
     }
@@ -585,6 +649,7 @@ class GarminClient {
             "GARMIN_CONNECT_MOBILE_ANDROID_DI",
         )
         private val DI_SERVICE_URLS = listOf(
+            "https://sso.garmin.com/sso/embed",
             "https://connect.garmin.com/modern",
             "https://connect.garmin.com/app",
             "https://mobile.integration.garmin.com/gcm/android",

@@ -123,6 +123,9 @@ interface ActivityDao {
     @Query("SELECT id FROM activities WHERE source = :source")
     suspend fun idsBySource(source: String): List<String>
 
+    @Query("SELECT id FROM activities WHERE hasTrack = 1")
+    suspend fun idsWithTrack(): List<String>
+
     @Query("DELETE FROM activities")
     suspend fun clear(): Int
 
