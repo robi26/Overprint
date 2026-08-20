@@ -153,8 +153,9 @@ class GarminClient {
         }
         cookieJar.clear()
         session = GarminSession("")
+        getHtml(ssoEmbedUrl())
         val ssoUrl = ssoSignInUrl()
-        val signInPage = getHtml(ssoUrl, referer = "https://connect.garmin.com/modern")
+        val signInPage = getHtml(ssoUrl, referer = SSO_EMBED)
         val form = FormBody.Builder()
         hiddenInputs(signInPage).forEach { (name, value) -> form.add(name, value) }
         form.add("username", username)
@@ -173,24 +174,22 @@ class GarminClient {
                 html.contains("mfa", ignoreCase = true) && html.contains("verification", ignoreCase = true) ->
                 error("Garmin asked for extra verification. Complete that on garmin.com, then try again.")
         }
-        val ticket = extractTicket(html)
-        if (ticket == null) {
+        val tickets = extractGarminServiceTickets(html)
+        if (tickets.isEmpty()) {
             if (html.contains("name=\"password\"") && !html.contains("AUTH_SUCCESS")) {
                 error("Garmin login failed. Check email and password.")
             }
             error("Garmin SSO did not return a usable service ticket. Extra verification may be required on garmin.com.")
         }
-        val exchanged = exchangeServiceTicket(ticket)
+        val exchanged = exchangeServiceTickets(tickets)
         if (exchanged != null) session = exchanged
         if (session.isBlank) {
-            runCatching { getHtml(ticketRedeemUrl(ticket)) }
+            runCatching { getHtml(ticketRedeemUrl(tickets.first())) }
             websiteTokenExchange()?.let { session = it }
         }
         if (session.isBlank) {
-            error(
-                "Garmin login succeeded but no API token was issued. " +
-                    (lastListDiagnostic.takeIf { it.isNotBlank() } ?: "Garmin now requires an OAuth token for activity download."),
-            )
+            Log.i(TAG, "DI ticket exchange failed: $lastListDiagnostic")
+            error("Garmin login succeeded but no API token was issued. Try again in a minute.")
         }
         Log.i(TAG, "Garmin SSO login ok, token length=${session.accessToken.length}")
     }
@@ -390,68 +389,91 @@ class GarminClient {
         throw lastError ?: error("Garmin request failed")
     }
 
-    private fun ssoSignInUrl(): String = HttpUrl.Builder()
+    private fun ssoEmbedUrl(): String = HttpUrl.Builder()
         .scheme("https")
         .host("sso.garmin.com")
-        .addPathSegments("sso/signin")
-        .addQueryParameter("service", "https://connect.garmin.com/modern")
-        .addQueryParameter("clientId", "GarminConnect")
-        .addQueryParameter("gauthHost", "https://sso.garmin.com/sso")
-        .addQueryParameter("consumeServiceTicket", "false")
+        .addPathSegments("sso/embed")
+        .addQueryParameter("id", "gauth-widget")
+        .addQueryParameter("embedWidget", "true")
+        .addQueryParameter("gauthHost", SSO_BASE)
         .build()
         .toString()
 
     /**
-     * Picks the CAS service ticket out of the SSO response. Only "ST-" values qualify: the
-     * regex matches any `ticket=` parameter anywhere in the page, so without the prefix check
-     * a link or tracking parameter on an error page would be accepted as a credential.
+     * Garmin binds the CAS ticket to this exact `service` URL. The later DI exchange
+     * must send the same value as `service_url` or the ticket is rejected and spent.
      */
-    private fun extractTicket(html: String): String? =
-        TICKET_RE.findAll(html)
-            .map { it.groupValues[1] }
-            .firstOrNull { it.startsWith("ST-") }
+    private fun ssoSignInUrl(): String {
+        val embed = SSO_EMBED
+        return HttpUrl.Builder()
+            .scheme("https")
+            .host("sso.garmin.com")
+            .addPathSegments("sso/signin")
+            .addQueryParameter("service", embed)
+            .addQueryParameter("webhost", CONNECT_MODERN)
+            .addQueryParameter("source", embed)
+            .addQueryParameter("redirectAfterAccountLoginUrl", embed)
+            .addQueryParameter("redirectAfterAccountCreationUrl", embed)
+            .addQueryParameter("gauthHost", SSO_BASE)
+            .addQueryParameter("locale", "en_US")
+            .addQueryParameter("id", "gauth-widget")
+            .addQueryParameter("cssUrl", "https://connect.garmin.com/gauth-custom-v3.2-min.css")
+            .addQueryParameter("privacyStatementUrl", "https://www.garmin.com/en-US/privacy/connect/")
+            .addQueryParameter("clientId", "GarminConnect")
+            .addQueryParameter("consumeServiceTicket", "false")
+            .addQueryParameter("embedWidget", "true")
+            .addQueryParameter("generateExtraServiceTicket", "true")
+            .addQueryParameter("generateTwoExtraServiceTickets", "true")
+            .addQueryParameter("generateNoServiceTicket", "false")
+            .addQueryParameter("mobile", "false")
+            .addQueryParameter("connectLegalTerms", "true")
+            .addQueryParameter("showPassword", "true")
+            .build()
+            .toString()
+    }
 
     private fun ticketRedeemUrl(ticket: String): String = HttpUrl.Builder()
         .scheme("https")
-        .host("connect.garmin.com")
-        .addPathSegment("modern")
+        .host("sso.garmin.com")
+        .addPathSegments("sso/embed")
         .addQueryParameter("ticket", ticket)
         .build()
         .toString()
 
-    private fun exchangeServiceTicket(ticket: String): GarminSession? {
+    /**
+     * Service tickets are single-use. Each client ID attempt consumes one ticket; extra
+     * tickets from SSO let us try the next ID if Garmin has rotated the quarterly one.
+     */
+    private fun exchangeServiceTickets(tickets: List<String>): GarminSession? {
         val attempts = mutableListOf<String>()
-        for (clientId in DI_CLIENT_IDS) {
-            for (serviceUrl in DI_SERVICE_URLS) {
-                val body = FormBody.Builder()
-                    .add("client_id", clientId)
-                    .add("service_ticket", ticket)
-                    .add("grant_type", DI_GRANT_TYPE)
-                    .add("service_url", serviceUrl)
-                    .build()
-                val basic = "Basic " + Base64.encodeToString("$clientId:".toByteArray(), Base64.NO_WRAP)
-                val req = Request.Builder()
-                    .url(DI_TOKEN_URL)
-                    .post(body)
-                    .header("Authorization", basic)
-                    .header("Accept", "application/json")
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    .header("User-Agent", "GCM-Android-5.23")
-                    .header("nk", "NT")
-                    .build()
-                val (code, text) = executeRaw(req)
-                if (code in 200..299) {
-                    GarminSession.fromTokenResponse(text, clientId)?.let { token ->
-                        Log.i(TAG, "DI token ok via $clientId / $serviceUrl")
-                        return token
-                    }
-                    attempts += "$clientId: HTTP $code but no access_token"
-                } else {
-                    attempts += "$clientId: HTTP $code (${bodyShape(text)})"
+        tickets.zip(DI_CLIENT_IDS).forEach { (ticket, clientId) ->
+            val body = FormBody.Builder()
+                .add("client_id", clientId)
+                .add("service_ticket", ticket)
+                .add("grant_type", DI_GRANT_TYPE)
+                .add("service_url", SSO_EMBED)
+                .build()
+            val basic = "Basic " + Base64.encodeToString("$clientId:".toByteArray(), Base64.NO_WRAP)
+            val req = Request.Builder()
+                .url(DI_TOKEN_URL)
+                .post(body)
+                .header("Authorization", basic)
+                .header("Accept", "application/json")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("User-Agent", "GCM-Android-5.23")
+                .header("nk", "NT")
+                .build()
+            val (code, text) = executeRaw(req)
+            if (code in 200..299) {
+                GarminSession.fromTokenResponse(text, clientId)?.let { token ->
+                    Log.i(TAG, "DI token ok via $clientId")
+                    return token
                 }
+                attempts += "$clientId: HTTP $code but no access_token"
+            } else {
+                attempts += "$clientId: HTTP $code (${bodyShape(text)})"
             }
         }
-        Log.i(TAG, "DI ticket exchange failed: ${attempts.joinToString(" | ")}")
         lastListDiagnostic = attempts.joinToString(" | ")
         return null
     }
@@ -641,6 +663,18 @@ class GarminClient {
         private val TICKET_RE = Regex("""[?&]ticket=([^"'&\s<]+)""")
 
         /**
+         * Picks CAS service tickets out of the SSO response. Only "ST-" values qualify: the
+         * regex matches any `ticket=` parameter anywhere in the page, so without the prefix
+         * check a link or tracking parameter on an error page would be accepted as a credential.
+         */
+        internal fun extractGarminServiceTickets(html: String): List<String> =
+            TICKET_RE.findAll(html)
+                .map { it.groupValues[1] }
+                .filter { it.startsWith("ST-") }
+                .distinct()
+                .toList()
+
+        /**
          * Describes a response body for logs and error text without reproducing it. Bodies
          * carry activity names and locations, and on the auth endpoints they may carry token
          * material, none of which belongs in logcat or on screen.
@@ -659,23 +693,22 @@ class GarminClient {
 
         private fun bodyShape(body: String): String = bodyShape(body.toByteArray(Charsets.UTF_8))
 
+        private const val SSO_EMBED = "https://sso.garmin.com/sso/embed"
+        private const val SSO_BASE = "https://sso.garmin.com/sso"
+        private const val CONNECT_MODERN = "https://connect.garmin.com/modern"
         private const val DI_TOKEN_URL = "https://diauth.garmin.com/di-oauth2-service/oauth/token"
         private const val DI_GRANT_TYPE =
             "https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket"
+        // 2025Q2 is the last ID verified working with embed tickets. Newer quarterly IDs
+        // are tried only when SSO issued extra tickets, because a miss spends the ticket.
         private val DI_CLIENT_IDS = listOf(
+            "GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2026Q3",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2026Q2",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2026Q1",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q4",
-            "GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI_2024Q4",
             "GARMIN_CONNECT_MOBILE_ANDROID_DI",
-        )
-        private val DI_SERVICE_URLS = listOf(
-            "https://sso.garmin.com/sso/embed",
-            "https://connect.garmin.com/modern",
-            "https://connect.garmin.com/app",
-            "https://mobile.integration.garmin.com/gcm/android",
         )
         private val WEBSITE_TOKEN_URLS = listOf(
             "https://connect.garmin.com/modern/di-oauth/exchange",

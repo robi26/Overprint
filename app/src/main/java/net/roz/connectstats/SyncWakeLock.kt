@@ -16,6 +16,7 @@ class SyncWakeLock(context: Context) {
         next.setReferenceCounted(false)
         next.acquire(MAX_HOLD_MS)
         lock = next
+        GarminSyncService.start(appContext)
     }
 
     @Synchronized
@@ -24,6 +25,7 @@ class SyncWakeLock(context: Context) {
             if (held.isHeld) held.release()
         }
         lock = null
+        GarminSyncService.stop(appContext)
     }
 
     companion object {

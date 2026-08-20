@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Overprint</string>
+    <string name="garmin_sync_channel">Garmin sync</string>
+    <string name="garmin_sync_notification">Syncing from Garmin…</string>
 </resources>

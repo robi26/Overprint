@@ -1,5 +1,6 @@
 package net.roz.connectstats
 
+import net.roz.connectstats.data.remote.garmin.GarminClient
 import net.roz.connectstats.data.remote.garmin.GarminSession
 import net.roz.connectstats.data.remote.garmin.garminListMeansDeadSession
 import org.junit.Assert.assertEquals
@@ -47,5 +48,24 @@ class GarminSessionTest {
         assertFalse(garminListMeansDeadSession(true, false, true))
         assertFalse(garminListMeansDeadSession(false, true, true))
         assertFalse(garminListMeansDeadSession(false, false, false))
+    }
+
+    @Test
+    fun extractsOnlyCasServiceTickets() {
+        val html = """
+            <script>window.location='https://sso.garmin.com/sso/embed?ticket=ST-123-abc';</script>
+            <a href="https://example.com/?ticket=not-a-cas">x</a>
+            <script>var extra='https://sso.garmin.com/sso/embed?ticket=ST-456-def';</script>
+        """.trimIndent()
+        assertEquals(
+            listOf("ST-123-abc", "ST-456-def"),
+            GarminClient.extractGarminServiceTickets(html),
+        )
+    }
+
+    @Test
+    fun ignoresPagesWithoutServiceTickets() {
+        val html = """<form><input name="password"><a href="?ticket=tracking">x</a></form>"""
+        assertTrue(GarminClient.extractGarminServiceTickets(html).isEmpty())
     }
 }

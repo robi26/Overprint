@@ -1,7 +1,10 @@
 package net.roz.connectstats
 
+import android.app.Activity
+import android.content.ContextWrapper
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -278,8 +281,18 @@ private fun OverprintNav(
 private fun KeepAwakeWhileSyncing(enabled: Boolean) {
     val view = LocalView.current
     DisposableEffect(enabled) {
-        val previous = view.keepScreenOn
-        view.keepScreenOn = enabled
-        onDispose { view.keepScreenOn = previous }
+        val window = generateSequence(view.context) { (it as? ContextWrapper)?.baseContext }
+            .filterIsInstance<Activity>()
+            .firstOrNull()
+            ?.window
+        val previousKeepOn = view.keepScreenOn
+        if (enabled) {
+            view.keepScreenOn = true
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            view.keepScreenOn = previousKeepOn
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 }
