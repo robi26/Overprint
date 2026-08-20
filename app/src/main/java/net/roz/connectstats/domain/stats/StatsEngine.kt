@@ -319,18 +319,35 @@ object StatsEngine {
             startLongitude = startPt?.longitude,
             deviceName = null,
             hasTrack = enriched.isNotEmpty(),
+            minHeartRate = hrs.minOrNull(),
+            maxCadence = cads.maxOrNull(),
+            elevationLossMeters = elevationLoss(enriched).takeIf { it > 0.5 },
+            avgTemperatureC = enriched.mapNotNull { it.temperatureC }.averageOrNull(),
+            avgVerticalOscillationMm = enriched.mapNotNull { it.verticalOscillationMm }.averageOrNull(),
+            avgStanceTimeMs = enriched.mapNotNull { it.stanceTimeMs }.averageOrNull(),
+            avgVerticalRatio = enriched.mapNotNull { it.verticalRatio }.averageOrNull(),
+            avgStepLengthMm = enriched.mapNotNull { it.stepLengthMm }.averageOrNull(),
+            avgRespirationRate = enriched.mapNotNull { it.respirationRate }.averageOrNull(),
         )
     }
 
-    fun elevationGain(track: List<TrackPoint>): Double {
-        var gain = 0.0
+    fun elevationGain(track: List<TrackPoint>): Double = elevationChange(track, gain = true)
+
+    fun elevationLoss(track: List<TrackPoint>): Double = elevationChange(track, gain = false)
+
+    private fun elevationChange(track: List<TrackPoint>, gain: Boolean): Double {
+        var total = 0.0
         var last: Double? = null
         track.forEach { p ->
             val alt = p.altitudeMeters ?: return@forEach
-            last?.let { if (alt > it) gain += alt - it }
+            last?.let { previous ->
+                val delta = alt - previous
+                if (gain && delta > 0) total += delta
+                if (!gain && delta < 0) total -= delta
+            }
             last = alt
         }
-        return gain
+        return total
     }
 
     private fun summarize(label: String, start: Long, end: Long, activities: List<Activity>): PeriodSummary {
@@ -500,6 +517,46 @@ fun decodeSpeedMps(speed: Double?): Double? {
     val metres = if (value > 80.0) value / 1000.0 else value
     return metres.takeIf { it <= 55.0 }
 }
+
+fun Activity.withDerivedTrackStats(track: List<TrackPoint>): Activity {
+    if (track.isEmpty()) return this
+    fun avg(select: (TrackPoint) -> Double?) =
+        track.mapNotNull(select).takeIf { it.isNotEmpty() }?.average()
+    fun minOf(select: (TrackPoint) -> Double?) = track.mapNotNull(select).minOrNull()
+    fun maxOf(select: (TrackPoint) -> Double?) = track.mapNotNull(select).maxOrNull()
+    val loss = StatsEngine.elevationLoss(track)
+    return copy(
+        minHeartRate = minHeartRate ?: minOf { it.heartRate },
+        maxHeartRate = maxHeartRate ?: maxOf { it.heartRate },
+        maxCadence = maxCadence ?: maxOf { it.cadence },
+        maxPower = maxPower ?: maxOf { it.power },
+        elevationLossMeters = elevationLossMeters ?: loss.takeIf { it > 0.5 },
+        avgTemperatureC = avgTemperatureC ?: avg { it.temperatureC },
+        avgVerticalOscillationMm = avgVerticalOscillationMm ?: avg { it.verticalOscillationMm },
+        avgStanceTimeMs = avgStanceTimeMs ?: avg { it.stanceTimeMs },
+        avgVerticalRatio = avgVerticalRatio ?: avg { it.verticalRatio },
+        avgStepLengthMm = avgStepLengthMm ?: avg { it.stepLengthMm } ?: strideLengthMeters?.times(1000.0),
+        avgRespirationRate = avgRespirationRate ?: avg { it.respirationRate },
+    )
+}
+
+fun Activity.withListExtras(list: Activity): Activity = copy(
+    deviceName = deviceName.takeUnless { it.isNullOrBlank() || it == "Garmin" } ?: list.deviceName ?: deviceName,
+    minHeartRate = minHeartRate ?: list.minHeartRate,
+    maxCadence = maxCadence ?: list.maxCadence,
+    elevationLossMeters = elevationLossMeters ?: list.elevationLossMeters,
+    normalizedPower = normalizedPower ?: list.normalizedPower,
+    trainingStressScore = trainingStressScore ?: list.trainingStressScore,
+    intensityFactor = intensityFactor ?: list.intensityFactor,
+    avgTemperatureC = avgTemperatureC ?: list.avgTemperatureC,
+    avgVerticalOscillationMm = avgVerticalOscillationMm ?: list.avgVerticalOscillationMm,
+    avgStanceTimeMs = avgStanceTimeMs ?: list.avgStanceTimeMs,
+    avgVerticalRatio = avgVerticalRatio ?: list.avgVerticalRatio,
+    avgStepLengthMm = avgStepLengthMm ?: list.avgStepLengthMm,
+    avgRespirationRate = avgRespirationRate ?: list.avgRespirationRate,
+    aerobicTrainingEffect = aerobicTrainingEffect ?: list.aerobicTrainingEffect,
+    anaerobicTrainingEffect = anaerobicTrainingEffect ?: list.anaerobicTrainingEffect,
+)
 
 fun sanitizeFitUnits(track: List<TrackPoint>): List<TrackPoint> {
     if (track.isEmpty()) return track

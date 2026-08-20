@@ -40,6 +40,20 @@ data class ActivityEntity(
     val startLongitude: Double?,
     val deviceName: String?,
     val hasTrack: Boolean,
+    val minHeartRate: Double? = null,
+    val maxCadence: Double? = null,
+    val elevationLossMeters: Double? = null,
+    val normalizedPower: Double? = null,
+    val trainingStressScore: Double? = null,
+    val intensityFactor: Double? = null,
+    val avgTemperatureC: Double? = null,
+    val avgVerticalOscillationMm: Double? = null,
+    val avgStanceTimeMs: Double? = null,
+    val avgVerticalRatio: Double? = null,
+    val avgStepLengthMm: Double? = null,
+    val avgRespirationRate: Double? = null,
+    val aerobicTrainingEffect: Double? = null,
+    val anaerobicTrainingEffect: Double? = null,
     val notes: String?,
     val deleted: Boolean = false,
 )
@@ -63,6 +77,12 @@ data class TrackPointEntity(
     val power: Double?,
     val gradePercent: Double?,
     val temperatureC: Double?,
+    val verticalOscillationMm: Double? = null,
+    val stanceTimeMs: Double? = null,
+    val verticalRatio: Double? = null,
+    val stepLengthMm: Double? = null,
+    val leftRightBalancePercent: Double? = null,
+    val respirationRate: Double? = null,
 )
 
 @Entity(
@@ -182,7 +202,7 @@ interface LapDao {
 
 @Database(
     entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -203,5 +223,25 @@ abstract class AppDatabase : RoomDatabase() {
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE activities ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        listOf(
+            "minHeartRate", "maxCadence", "elevationLossMeters", "normalizedPower",
+            "trainingStressScore", "intensityFactor", "avgTemperatureC",
+            "avgVerticalOscillationMm", "avgStanceTimeMs", "avgVerticalRatio",
+            "avgStepLengthMm", "avgRespirationRate", "aerobicTrainingEffect",
+            "anaerobicTrainingEffect",
+        ).forEach { column ->
+            db.execSQL("ALTER TABLE activities ADD COLUMN $column REAL")
+        }
+        listOf(
+            "verticalOscillationMm", "stanceTimeMs", "verticalRatio", "stepLengthMm",
+            "leftRightBalancePercent", "respirationRate",
+        ).forEach { column ->
+            db.execSQL("ALTER TABLE track_points ADD COLUMN $column REAL")
+        }
     }
 }

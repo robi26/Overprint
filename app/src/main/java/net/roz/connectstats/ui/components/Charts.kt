@@ -94,6 +94,13 @@ fun TrackPoint.valueOf(metric: MapMetric): Double? = when (metric) {
     MapMetric.CADENCE -> cadence
     MapMetric.ELEVATION -> altitudeMeters
     MapMetric.GRADE -> gradePercent
+    MapMetric.TEMPERATURE -> temperatureC
+    MapMetric.RESPIRATION -> respirationRate
+    MapMetric.STEP_LENGTH -> stepLengthMm
+    MapMetric.VERTICAL_OSC -> verticalOscillationMm
+    MapMetric.GROUND_CONTACT -> stanceTimeMs
+    MapMetric.VERTICAL_RATIO -> verticalRatio
+    MapMetric.BALANCE -> leftRightBalancePercent
 }
 
 fun TrackPoint.valueOf(metric: ChartMetric): Double? = chartValue(metric)
@@ -463,13 +470,23 @@ private fun chartLineColor(metric: ChartMetric): Color = when (metric) {
     ChartMetric.CADENCE -> Color(0xFF1AA6C4)
     ChartMetric.ELEVATION -> Color(0xFFC8A26A)
     ChartMetric.GRADE -> Color(0xFF8B9BB4)
+    ChartMetric.TEMPERATURE -> Color(0xFF5B8C5A)
+    ChartMetric.RESPIRATION -> Color(0xFF9B59B6)
+    ChartMetric.STEP_LENGTH -> Color(0xFF2E6BFF)
+    ChartMetric.VERTICAL_OSC -> Color(0xFFE67E22)
+    ChartMetric.GROUND_CONTACT -> Color(0xFF16A085)
+    ChartMetric.VERTICAL_RATIO -> Color(0xFF7F8C8D)
+    ChartMetric.BALANCE -> Color(0xFF8E44AD)
 }
 
 private fun niceAxisTicks(series: List<Pair<Double, Double>>, metric: ChartMetric): List<Double> {
     val minV = series.minOf { it.second }
     val maxV = series.maxOf { it.second }
     val clampZero = metric == ChartMetric.SPEED || metric == ChartMetric.POWER ||
-        metric == ChartMetric.HEART_RATE || metric == ChartMetric.CADENCE
+        metric == ChartMetric.HEART_RATE || metric == ChartMetric.CADENCE ||
+        metric == ChartMetric.RESPIRATION || metric == ChartMetric.STEP_LENGTH ||
+        metric == ChartMetric.VERTICAL_OSC || metric == ChartMetric.GROUND_CONTACT ||
+        metric == ChartMetric.VERTICAL_RATIO
     return axisTicks(minV, maxV, 4, clampZero)
 }
 

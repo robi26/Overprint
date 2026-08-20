@@ -25,6 +25,20 @@ data class Activity(
     val startLongitude: Double?,
     val deviceName: String?,
     val hasTrack: Boolean,
+    val minHeartRate: Double? = null,
+    val maxCadence: Double? = null,
+    val elevationLossMeters: Double? = null,
+    val normalizedPower: Double? = null,
+    val trainingStressScore: Double? = null,
+    val intensityFactor: Double? = null,
+    val avgTemperatureC: Double? = null,
+    val avgVerticalOscillationMm: Double? = null,
+    val avgStanceTimeMs: Double? = null,
+    val avgVerticalRatio: Double? = null,
+    val avgStepLengthMm: Double? = null,
+    val avgRespirationRate: Double? = null,
+    val aerobicTrainingEffect: Double? = null,
+    val anaerobicTrainingEffect: Double? = null,
     val notes: String? = null,
     val deleted: Boolean = false,
 ) {
@@ -83,6 +97,12 @@ data class TrackPoint(
     val power: Double?,
     val gradePercent: Double?,
     val temperatureC: Double?,
+    val verticalOscillationMm: Double? = null,
+    val stanceTimeMs: Double? = null,
+    val verticalRatio: Double? = null,
+    val stepLengthMm: Double? = null,
+    val leftRightBalancePercent: Double? = null,
+    val respirationRate: Double? = null,
 )
 
 data class Lap(

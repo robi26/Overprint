@@ -15,6 +15,7 @@ import net.roz.connectstats.domain.stats.chartSeries
 import net.roz.connectstats.domain.stats.sanitizeActivity
 import net.roz.connectstats.domain.stats.sanitizeFitUnits
 import net.roz.connectstats.domain.stats.windowedSeries
+import net.roz.connectstats.domain.stats.withDerivedTrackStats
 import net.roz.connectstats.domain.stats.withNormalizedElapsed
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -66,6 +67,8 @@ class StatsEngineTest {
         assertTrue(fmt.distance(12500.0).contains("12.50"))
         assertEquals("5:00", fmt.duration(300.0))
         assertTrue(fmt.pace(300.0).startsWith("5:00"))
+        assertEquals("5.00" to "Distance (km)", fmt.heroDistance(5000.0))
+        assertEquals("18.0" to "Speed (km/h)", fmt.heroSpeed(5.0))
     }
 
     @Test
@@ -140,6 +143,19 @@ class StatsEngineTest {
         assertEquals("km/h", ChartMetric.SPEED.unit())
         assertEquals("m", ChartMetric.ELEVATION.unit())
         assertEquals("bpm", ChartMetric.HEART_RATE.unit())
+    }
+
+    @Test
+    fun derivedTrackStatsFillTemperatureAndDescent() {
+        val track = listOf(
+            samplePoint(3.0, 400.0).copy(temperatureC = 16.0, heartRate = 140.0),
+            samplePoint(3.0, 412.0).copy(temperatureC = 18.0, heartRate = 150.0),
+            samplePoint(3.0, 405.0).copy(temperatureC = 17.0, heartRate = 148.0),
+        )
+        val filled = sample("t", 0L, 1000.0).withDerivedTrackStats(track)
+        assertEquals(17.0, filled.avgTemperatureC!!, 0.01)
+        assertEquals(140.0, filled.minHeartRate)
+        assertEquals(7.0, filled.elevationLossMeters!!, 0.01)
     }
 
     @Test

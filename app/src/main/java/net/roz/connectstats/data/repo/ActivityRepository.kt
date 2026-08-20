@@ -24,6 +24,8 @@ import net.roz.connectstats.domain.model.TrackPoint
 import net.roz.connectstats.domain.stats.sanitizeActivity
 import net.roz.connectstats.domain.stats.sanitizeFitUnits
 import net.roz.connectstats.domain.stats.sanitizeLap
+import net.roz.connectstats.domain.stats.withDerivedTrackStats
+import net.roz.connectstats.domain.stats.withListExtras
 import net.roz.connectstats.domain.stats.withNormalizedElapsed
 import kotlin.math.min
 
@@ -43,7 +45,7 @@ class ActivityRepository(
         val entity = db.activities().byId(id) ?: return null
         val track = withNormalizedElapsed(sanitizeFitUnits(db.tracks().forActivity(id).map { it.toModel() }))
         val laps = db.laps().forActivity(id).map { it.toModel() }
-        return ActivityDetail(entity.toModel(), track, laps)
+        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps)
     }
 
     suspend fun gpsTracks(
@@ -118,6 +120,9 @@ class ActivityRepository(
             val page = client.listActivities(start, pageSize)
             if (page.isEmpty()) break
             listed += page.size
+            page.filter { it.id in skipFetch }.forEach { summary ->
+                mergeListExtras(summary)
+            }
             if (garminReachedKnownHistory(page.map { it.id }, skipFetch)) break
             val toFetch = page.filter { it.id !in skipFetch }
             val batchTotal = imported + toFetch.size
@@ -136,7 +141,14 @@ class ActivityRepository(
                         warnings += "${summary.name}: ${err.message ?: err.javaClass.simpleName}"
                         ActivityDetail(summary.copy(hasTrack = false), emptyList(), emptyList())
                     }
-                save(detail.copy(activity = detail.activity.copy(name = summary.name, location = summary.location)))
+                save(
+                    detail.copy(
+                        activity = detail.activity.withListExtras(summary).copy(
+                            name = summary.name,
+                            location = summary.location ?: detail.activity.location,
+                        ),
+                    ),
+                )
                 skipFetch += summary.id
                 imported++
             }
@@ -191,6 +203,12 @@ class ActivityRepository(
         settings.update { it.copy(garminEnabled = true, garminToken = client.sessionToken) }
     }
 
+    private suspend fun mergeListExtras(summary: Activity) {
+        val existing = db.activities().byId(summary.id) ?: return
+        if (existing.deleted) return
+        db.activities().upsert(existing.toModel().withListExtras(summary).toEntity())
+    }
+
     suspend fun save(detail: ActivityDetail) {
         val existing = db.activities().byId(detail.activity.id)
         if (existing?.deleted == true) return
@@ -233,7 +251,10 @@ private fun ActivityEntity.toModel() = sanitizeActivity(
         id, externalId, DataSource.valueOf(source), name, ActivityType.fromKey(type),
         startTimeMillis, location, distanceMeters, durationSeconds, movingSeconds,
         elevationGainMeters, calories, avgHeartRate, maxHeartRate, avgSpeedMps, maxSpeedMps,
-        avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude, deviceName, hasTrack, notes, deleted,
+        avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude, deviceName, hasTrack,
+        minHeartRate, maxCadence, elevationLossMeters, normalizedPower, trainingStressScore,
+        intensityFactor, avgTemperatureC, avgVerticalOscillationMm, avgStanceTimeMs, avgVerticalRatio,
+        avgStepLengthMm, avgRespirationRate, aerobicTrainingEffect, anaerobicTrainingEffect, notes, deleted,
     ),
 )
 
@@ -241,12 +262,17 @@ private fun Activity.toEntity() = ActivityEntity(
     id, externalId, source.name, name, type.key, startTimeMillis, location, distanceMeters,
     durationSeconds, movingSeconds, elevationGainMeters, calories, avgHeartRate, maxHeartRate,
     avgSpeedMps, maxSpeedMps, avgCadence, avgPower, maxPower, avgGrade, startLatitude, startLongitude,
-    deviceName, hasTrack, notes, deleted,
+    deviceName, hasTrack, minHeartRate, maxCadence, elevationLossMeters, normalizedPower,
+    trainingStressScore, intensityFactor, avgTemperatureC, avgVerticalOscillationMm, avgStanceTimeMs,
+    avgVerticalRatio, avgStepLengthMm, avgRespirationRate, aerobicTrainingEffect,
+    anaerobicTrainingEffect, notes, deleted,
 )
 
 private fun TrackPointEntity.toModel() = TrackPoint(
     activityId, timestampMillis, elapsedSeconds, latitude, longitude, altitudeMeters,
     distanceMeters, speedMps, heartRate, cadence, power, gradePercent, temperatureC,
+    verticalOscillationMm, stanceTimeMs, verticalRatio, stepLengthMm, leftRightBalancePercent,
+    respirationRate,
 )
 
 private fun TrackPoint.toEntity() = TrackPointEntity(
@@ -263,6 +289,12 @@ private fun TrackPoint.toEntity() = TrackPointEntity(
     power = power,
     gradePercent = gradePercent,
     temperatureC = temperatureC,
+    verticalOscillationMm = verticalOscillationMm,
+    stanceTimeMs = stanceTimeMs,
+    verticalRatio = verticalRatio,
+    stepLengthMm = stepLengthMm,
+    leftRightBalancePercent = leftRightBalancePercent,
+    respirationRate = respirationRate,
 )
 
 private fun LapEntity.toModel() = sanitizeLap(

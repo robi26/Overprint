@@ -10,7 +10,6 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.runtime.SideEffect
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
@@ -31,12 +30,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
@@ -105,6 +107,7 @@ private fun OverprintNav(
     val moreRoutes = setOf("more", "heatmap", "settings")
     val showBack = route == "detail" || route == "heatmap" || route == "settings"
     var confirmDelete by remember { mutableStateOf(false) }
+    KeepAwakeWhileSyncing(state.garminSync.running)
 
     Scaffold(
         topBar = {
@@ -268,5 +271,15 @@ private fun OverprintNav(
                 ActivityDetailScreen(state.selected, state.fmt, state.settings.maxHeartRate, state.settings.ftpWatts)
             }
         }
+    }
+}
+
+@Composable
+private fun KeepAwakeWhileSyncing(enabled: Boolean) {
+    val view = LocalView.current
+    DisposableEffect(enabled) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = enabled
+        onDispose { view.keepScreenOn = previous }
     }
 }

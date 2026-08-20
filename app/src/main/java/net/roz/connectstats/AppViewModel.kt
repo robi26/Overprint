@@ -44,6 +44,7 @@ data class UiState(
 class AppViewModel(
     private val repo: ActivityRepository,
     private val settingsStore: SettingsStore,
+    private val syncWakeLock: SyncWakeLock = SyncWakeLock(OverprintApp.instance),
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(UiState())
@@ -156,20 +157,25 @@ class AppViewModel(
                 garminSync = GarminSyncProgress(running = true, message = "Starting Garmin sync…"),
             )
         }
-        runCatching {
-            repo.syncGarmin { update ->
-                _state.update { it.copy(garminSync = update, status = update.message) }
+        syncWakeLock.acquire()
+        try {
+            runCatching {
+                repo.syncGarmin { update ->
+                    _state.update { it.copy(garminSync = update, status = update.message) }
+                }
+            }.onFailure { err ->
+                val message = err.message ?: "Garmin sync failed"
+                _state.update {
+                    it.copy(
+                        garminSync = it.garminSync.copy(running = false, error = message),
+                        status = message,
+                    )
+                }
             }
-        }.onFailure { err ->
-            val message = err.message ?: "Garmin sync failed"
-            _state.update {
-                it.copy(
-                    garminSync = it.garminSync.copy(running = false, error = message),
-                    status = message,
-                )
-            }
+        } finally {
+            syncWakeLock.release()
+            _state.update { it.copy(refreshing = false, garminSync = it.garminSync.copy(running = false)) }
         }
-        _state.update { it.copy(refreshing = false, garminSync = it.garminSync.copy(running = false)) }
     }
 
     fun importFile(bytes: ByteArray, name: String) {
@@ -261,6 +267,11 @@ class AppViewModel(
                     a.type.displayName.contains(query, true))
         }
         return copy(filtered = filtered)
+    }
+
+    override fun onCleared() {
+        syncWakeLock.release()
+        super.onCleared()
     }
 
     companion object {

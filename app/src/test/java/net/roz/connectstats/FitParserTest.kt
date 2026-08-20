@@ -89,6 +89,101 @@ class FitParserTest {
         assertEquals(115.0, detail.track[1].heartRate)
         assertEquals(5.0, detail.track[1].elapsedSeconds, 0.01)
     }
+
+    @Test
+    fun recordExtrasAndSessionTrainingMetricsAreParsed() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(
+                local = 0,
+                global = 20,
+                fields = listOf(
+                    Field(253, 4, 6),
+                    Field(3, 1, 2),
+                    Field(13, 1, 1),
+                    Field(39, 2, 4),
+                    Field(41, 2, 4),
+                    Field(83, 2, 4),
+                    Field(85, 2, 4),
+                    Field(108, 2, 4),
+                ),
+            )
+            data(0) {
+                u32(start)
+                u8(150)
+                s8(18)
+                u16(920)
+                u16(2460)
+                u16(850)
+                u16(11200)
+                u16(2450)
+            }
+            data(0) {
+                u32(start + 10)
+                u8(155)
+                s8(19)
+                u16(900)
+                u16(2400)
+                u16(820)
+                u16(11000)
+                u16(2500)
+            }
+            definition(
+                local = 1,
+                global = 18,
+                fields = listOf(
+                    Field(253, 4, 6),
+                    Field(2, 4, 6),
+                    Field(7, 4, 6),
+                    Field(19, 1, 2),
+                    Field(23, 2, 4),
+                    Field(24, 1, 2),
+                    Field(34, 2, 4),
+                    Field(35, 2, 4),
+                    Field(36, 2, 4),
+                    Field(57, 1, 1),
+                    Field(64, 1, 2),
+                    Field(137, 1, 2),
+                ),
+            )
+            data(1) {
+                u32(start + 10)
+                u32(start)
+                u32(10_000)
+                u8(185)
+                u16(42)
+                u8(32)
+                u16(248)
+                u16(450)
+                u16(850)
+                s8(18)
+                u8(120)
+                u8(15)
+            }
+            definition(local = 2, global = 23, fields = listOf(Field(0, 1, 2), Field(27, 16, 7)))
+            data(2) {
+                u8(0)
+                str("Forerunner 965", 16)
+            }
+        }
+        val detail = FitParser.parse(bytes, "t")
+        assertEquals(18.0, detail.track[0].temperatureC)
+        assertEquals(92.0, detail.track[0].verticalOscillationMm!!, 0.01)
+        assertEquals(246.0, detail.track[0].stanceTimeMs!!, 0.01)
+        assertEquals(8.5, detail.track[0].verticalRatio!!, 0.01)
+        assertEquals(1120.0, detail.track[0].stepLengthMm!!, 0.01)
+        assertEquals(24.5, detail.track[0].respirationRate!!, 0.01)
+        assertEquals(185.0, detail.activity.maxCadence)
+        assertEquals(42.0, detail.activity.elevationLossMeters)
+        assertEquals(3.2, detail.activity.aerobicTrainingEffect!!, 0.01)
+        assertEquals(1.5, detail.activity.anaerobicTrainingEffect!!, 0.01)
+        assertEquals(248.0, detail.activity.normalizedPower)
+        assertEquals(45.0, detail.activity.trainingStressScore!!, 0.01)
+        assertEquals(0.85, detail.activity.intensityFactor!!, 0.01)
+        assertEquals(18.0, detail.activity.avgTemperatureC)
+        assertEquals(120.0, detail.activity.minHeartRate)
+        assertEquals("Forerunner 965", detail.activity.deviceName)
+    }
 }
 
 private data class Field(val num: Int, val size: Int, val base: Int)
@@ -131,6 +226,21 @@ private class FitWriter {
 
     fun u8(value: Int) {
         data.write(value and 0xFF)
+    }
+
+    fun u16(value: Int) {
+        val buf = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(value.toShort())
+        data.write(buf.array())
+    }
+
+    fun s8(value: Int) {
+        data.write(value and 0xFF)
+    }
+
+    fun str(value: String, size: Int) {
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        data.write(bytes, 0, minOf(bytes.size, size))
+        repeat((size - bytes.size).coerceAtLeast(0)) { data.write(0) }
     }
 
     fun u32(value: Long) {

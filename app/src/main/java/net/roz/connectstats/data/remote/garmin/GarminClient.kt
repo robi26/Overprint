@@ -315,14 +315,31 @@ class GarminClient {
                 avgSpeedMps = o.double("averageSpeed"),
                 maxSpeedMps = o.double("maxSpeed"),
                 avgCadence = o.double("averageRunningCadenceInStepsPerMinute")
-                    ?: o.double("averageBikingCadenceInRevPerMinute"),
+                    ?: o.double("averageBikingCadenceInRevPerMinute")
+                    ?: o.double("averageSwimCadenceInStrokesPerMinute"),
                 avgPower = o.double("avgPower"),
                 maxPower = o.double("maxPower"),
                 avgGrade = o.double("avgGrade"),
                 startLatitude = o.double("startLatitude"),
                 startLongitude = o.double("startLongitude"),
-                deviceName = o.string("deviceName") ?: "Garmin",
+                deviceName = o.string("deviceName") ?: o.string("manufacturer") ?: "Garmin",
                 hasTrack = false,
+                minHeartRate = o.double("minHR"),
+                maxCadence = o.double("maxRunningCadenceInStepsPerMinute")
+                    ?: o.double("maxBikingCadenceInRevPerMinute")
+                    ?: o.double("maxSwimCadenceInStrokesPerMinute"),
+                elevationLossMeters = o.double("elevationLoss"),
+                normalizedPower = o.double("normPower") ?: o.double("normalizedPower"),
+                trainingStressScore = o.double("trainingStressScore"),
+                intensityFactor = o.double("intensityFactor"),
+                avgTemperatureC = o.double("avgTemperature") ?: o.double("averageTemperature"),
+                avgVerticalOscillationMm = o.double("avgVerticalOscillation"),
+                avgStanceTimeMs = o.double("avgGroundContactTime"),
+                avgVerticalRatio = o.double("avgVerticalRatio"),
+                avgStepLengthMm = strideToMm(o.double("avgStrideLength")),
+                avgRespirationRate = o.double("avgRespirationRate"),
+                aerobicTrainingEffect = o.double("aerobicTrainingEffect"),
+                anaerobicTrainingEffect = o.double("anaerobicTrainingEffect"),
             )
         }
     }
@@ -587,6 +604,12 @@ class GarminClient {
             }
         }
         return iso.toLongOrNull()?.times(1000)
+    }
+
+    private fun strideToMm(value: Double?): Double? {
+        value ?: return null
+        if (!value.isFinite() || value <= 0.0) return null
+        return if (value in 0.4..3.5) value * 1000.0 else value
     }
 
     private class MemoryCookieJar : CookieJar {
