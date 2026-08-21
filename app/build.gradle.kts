@@ -10,11 +10,11 @@ val releaseStoreFilePath = System.getenv("RELEASE_STORE_FILE")
 val releaseStoreFile = releaseStoreFilePath?.let { file(it) }?.takeIf { it.isFile }
 
 android {
-    namespace = "net.roz.connectstats"
+    namespace = "ch.steigis.overprint"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "net.roz.connectstats"
+        applicationId = "ch.steigis.overprint"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
