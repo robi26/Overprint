@@ -5,6 +5,7 @@ import androidx.room.Room
 import ch.steigis.overprint.data.local.AppDatabase
 import ch.steigis.overprint.data.local.MIGRATION_1_2
 import ch.steigis.overprint.data.local.MIGRATION_2_3
+import ch.steigis.overprint.data.local.MIGRATION_3_4
 import ch.steigis.overprint.data.prefs.SettingsStore
 import ch.steigis.overprint.data.repo.ActivityRepository
 
@@ -20,7 +21,7 @@ class OverprintApp : Application() {
         super.onCreate()
         instance = this
         database = Room.databaseBuilder(this, AppDatabase::class.java, "connectstats.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .fallbackToDestructiveMigration(dropAllTables = true)
             .build()
         settings = SettingsStore(this)

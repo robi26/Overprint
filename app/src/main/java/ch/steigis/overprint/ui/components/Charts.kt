@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -45,7 +46,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -78,6 +78,7 @@ import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 fun metricColor(t: Float): Color {
     val clamped = t.coerceIn(0f, 1f)
@@ -518,10 +519,8 @@ fun BarChart(
     val colors = MaterialTheme.colorScheme
     val fill = barColor ?: colors.primary
     val grid = colors.outline.copy(alpha = 0.45f)
-    val labelColor = colors.onSurfaceVariant
     val maxV = remember(points) { niceMax(points.maxOfOrNull { it.value } ?: 1.0) }
     val ticks = remember(maxV) { (0..4).map { maxV * it / 4.0 } }
-    val xStep = max(1, (points.size - 1) / 5)
 
     Column(modifier.fillMaxWidth()) {
         if (points.isEmpty()) {
@@ -547,21 +546,112 @@ fun BarChart(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 40.dp, top = 8.dp)) {
-            points.forEachIndexed { i, p ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    if (i % xStep == 0 || i == points.lastIndex) {
-                        Text(
-                            p.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = labelColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                            textAlign = TextAlign.Center,
-                        )
+        ChartXLabels(points.map { it.label }, centered = true)
+    }
+}
+
+@Composable
+fun LineChart(
+    points: List<TrendPoint>,
+    modifier: Modifier = Modifier,
+    lineColor: Color? = null,
+    yFormatter: (Double) -> String = { String.format(Locale.US, "%.0f", it) },
+) {
+    val colors = MaterialTheme.colorScheme
+    val stroke = lineColor ?: colors.primary
+    val grid = colors.outline.copy(alpha = 0.45f)
+    val values = remember(points) { points.map { it.value } }
+    val rawMin = values.minOrNull() ?: 0.0
+    val rawMax = values.maxOrNull() ?: 1.0
+    val pad = ((rawMax - rawMin) * 0.12).coerceAtLeast(if (rawMax == rawMin) 1.0 else 0.0)
+    val ticks = remember(rawMin, rawMax) {
+        axisTicks((rawMin - pad).coerceAtLeast(0.0), rawMax + pad, 4, clampZero = rawMin >= 0)
+    }
+    val minV = ticks.first()
+    val maxV = ticks.last().coerceAtLeast(minV + 1e-6)
+
+    Column(modifier.fillMaxWidth()) {
+        if (points.isEmpty()) {
+            ChartEmpty()
+            return@Column
+        }
+        Row(Modifier.fillMaxWidth().height(180.dp)) {
+            AxisLabels(ticks.reversed().map(yFormatter))
+            Canvas(Modifier.weight(1f).fillMaxHeight()) {
+                ticks.forEach { v ->
+                    val y = size.height * (1f - ((v - minV) / (maxV - minV)).toFloat())
+                    drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                }
+                fun xAt(i: Int): Float =
+                    if (points.size == 1) size.width / 2f
+                    else i.toFloat() / (points.size - 1) * size.width
+                fun yAt(value: Double): Float =
+                    size.height * (1f - ((value - minV) / (maxV - minV)).toFloat())
+                if (points.size == 1) {
+                    drawCircle(stroke, 5.dp.toPx(), Offset(xAt(0), yAt(points[0].value)))
+                } else {
+                    val path = Path()
+                    points.forEachIndexed { i, p ->
+                        val x = xAt(i)
+                        val y = yAt(p.value)
+                        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                    }
+                    drawPath(
+                        path,
+                        stroke,
+                        style = Stroke(width = 2.5.dp.toPx(), cap = StrokeCap.Round),
+                    )
+                    if (points.size <= 16) {
+                        points.forEachIndexed { i, p ->
+                            drawCircle(stroke, 3.dp.toPx(), Offset(xAt(i), yAt(p.value)))
+                        }
                     }
                 }
             }
+        }
+        ChartXLabels(points.map { it.label })
+    }
+}
+
+private fun xLabelIndices(size: Int): List<Int> {
+    if (size <= 0) return emptyList()
+    if (size == 1) return listOf(0)
+    if (size <= 7) return List(size) { it }
+    val last = size - 1
+    return (0 until 5).map { ((it * last) / 4.0).roundToInt() }.distinct()
+}
+
+@Composable
+private fun ChartXLabels(
+    labels: List<String>,
+    modifier: Modifier = Modifier,
+    centered: Boolean = false,
+) {
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val indices = remember(labels.size) { xLabelIndices(labels.size) }
+    BoxWithConstraints(modifier.fillMaxWidth().padding(start = 40.dp, top = 6.dp).height(18.dp)) {
+        if (labels.isEmpty()) return@BoxWithConstraints
+        val n = labels.size
+        val last = n - 1
+        indices.forEach { i ->
+            val frac = when {
+                n <= 1 -> 0.5f
+                centered -> (i + 0.5f) / n
+                else -> i.toFloat() / last
+            }
+            Text(
+                labels[i],
+                modifier = when {
+                    !centered && i == 0 -> Modifier.align(Alignment.TopStart)
+                    !centered && i == last -> Modifier.align(Alignment.TopEnd)
+                    else -> Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = (maxWidth * frac - 14.dp).coerceAtLeast(0.dp))
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = labelColor,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -578,7 +668,6 @@ fun HistogramChart(
     val maxC = bins.maxOfOrNull { it.count }?.coerceAtLeast(1) ?: 1
     val maxV = niceMax(maxC.toDouble())
     val ticks = remember(maxV) { (0..4).map { maxV * it / 4.0 } }
-    val xStep = max(1, (bins.size - 1) / 4)
 
     Column(modifier.fillMaxWidth()) {
         if (bins.isEmpty()) {
@@ -611,22 +700,7 @@ fun HistogramChart(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 40.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            bins.forEachIndexed { i, b ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    if (i % xStep == 0 || i == bins.lastIndex) {
-                        Text(
-                            b.label.substringBefore(' '),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = labelColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-            }
-        }
+        ChartXLabels(bins.map { it.label.substringBefore(' ') }, centered = true)
         if (xUnit.isNotBlank()) {
             Text(
                 xUnit,

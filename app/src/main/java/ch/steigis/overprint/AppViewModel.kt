@@ -19,6 +19,7 @@ import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
+import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.GpsTrack
 import java.util.Calendar
 
@@ -40,6 +41,7 @@ data class UiState(
     val gpsTracks: List<GpsTrack> = emptyList(),
     val gpsTracksLoading: Boolean = false,
     val deletedActivities: List<Activity> = emptyList(),
+    val dailyHealth: List<DailyHealth> = emptyList(),
 )
 
 class AppViewModel(
@@ -69,6 +71,11 @@ class AppViewModel(
         viewModelScope.launch {
             settingsStore.settings.collect { s ->
                 _state.update { it.copy(settings = s, fmt = Formatters(s.metric)) }
+            }
+        }
+        viewModelScope.launch {
+            repo.dailyHealth.collect { days ->
+                _state.update { it.copy(dailyHealth = days) }
             }
         }
     }
@@ -141,6 +148,10 @@ class AppViewModel(
         viewModelScope.launch { runGarminSync() }
     }
 
+    fun loadHealthHistory() {
+        viewModelScope.launch { runHealthHistorySync() }
+    }
+
     private suspend fun runGarminSync() {
         if (_state.value.garminSync.running) return
         val settings = _state.value.settings
@@ -180,6 +191,47 @@ class AppViewModel(
         } finally {
             syncWakeLock.release()
             _state.update { it.copy(refreshing = false, garminSync = it.garminSync.copy(running = false)) }
+        }
+    }
+
+    private suspend fun runHealthHistorySync() {
+        if (_state.value.garminSync.running) return
+        val settings = _state.value.settings
+        if (!settings.hasGarminCredentials) {
+            _state.update {
+                it.copy(
+                    garminSync = GarminSyncProgress(
+                        error = "Enter your Garmin email and password in Settings.",
+                    ),
+                    status = "Enter your Garmin email and password in Settings.",
+                )
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                status = null,
+                garminSync = GarminSyncProgress(running = true, message = "Loading older health…"),
+            )
+        }
+        syncWakeLock.acquire()
+        try {
+            runCatching {
+                repo.syncHealthHistory { update ->
+                    _state.update { it.copy(garminSync = update, status = update.message) }
+                }
+            }.onFailure { err ->
+                val message = err.message ?: "Health history failed"
+                _state.update {
+                    it.copy(
+                        garminSync = it.garminSync.copy(running = false, error = message),
+                        status = message,
+                    )
+                }
+            }
+        } finally {
+            syncWakeLock.release()
+            _state.update { it.copy(garminSync = it.garminSync.copy(running = false)) }
         }
     }
 

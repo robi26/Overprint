@@ -51,6 +51,7 @@ import androidx.navigation.compose.rememberNavController
 import ch.steigis.overprint.ui.activities.ActivitiesScreen
 import ch.steigis.overprint.ui.calendar.CalendarScreen
 import ch.steigis.overprint.ui.detail.ActivityDetailScreen
+import ch.steigis.overprint.ui.health.HealthScreen
 import ch.steigis.overprint.ui.heatmap.HeatmapScreen
 import ch.steigis.overprint.ui.more.MoreScreen
 import ch.steigis.overprint.ui.settings.SettingsScreen
@@ -103,12 +104,13 @@ private fun OverprintNav(
         "calendar" to "Calendar",
         "stats" to "Statistics",
         "more" to "More",
+        "health" to "Health",
         "heatmap" to "Heatmap",
         "settings" to "Settings",
         "detail" to (state.selected?.activity?.name ?: "Activity"),
     )
-    val moreRoutes = setOf("more", "heatmap", "settings")
-    val showBack = route == "detail" || route == "heatmap" || route == "settings"
+    val moreRoutes = setOf("more", "health", "heatmap", "settings")
+    val showBack = route == "detail" || route == "health" || route == "heatmap" || route == "settings"
     var confirmDelete by remember { mutableStateOf(false) }
     KeepAwakeWhileSyncing(state.garminSync.running)
 
@@ -238,8 +240,18 @@ private fun OverprintNav(
             }
             composable("more") {
                 MoreScreen(
+                    onHealth = { nav.navigate("health") },
                     onHeatmap = { nav.navigate("heatmap") },
                     onSettings = { nav.navigate("settings") },
+                )
+            }
+            composable("health") {
+                HealthScreen(
+                    days = state.dailyHealth,
+                    garminSync = state.garminSync,
+                    fmt = state.fmt,
+                    hasGarminCredentials = state.settings.hasGarminCredentials,
+                    onLoadOlder = viewModel::loadHealthHistory,
                 )
             }
             composable("heatmap") {

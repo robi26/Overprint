@@ -17,6 +17,7 @@ import ch.steigis.overprint.data.parse.FitParser
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
+import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.DataSource
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -25,6 +26,7 @@ import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.text.SimpleDateFormat
+import java.time.LocalDate
 import java.util.Locale
 import java.util.TimeZone
 import java.util.concurrent.TimeUnit
@@ -254,6 +256,103 @@ class GarminClient {
             throw authFailure!!
         }
         error("Garmin activity list failed. ${attempts.joinToString(" ")}")
+    }
+
+    /**
+     * Daily wellness totals for [start]..[end]. Range stats first; optional per-day
+     * summaries fill stress, body battery, HR min/max, floors, SpO2, respiration.
+     */
+    suspend fun pullHealth(
+        start: LocalDate,
+        end: LocalDate,
+        includeDailySummaries: Boolean,
+        onProgress: (String) -> Unit = {},
+    ): List<DailyHealth> = withContext(Dispatchers.IO) {
+        val user = displayName()
+        val byDate = linkedMapOf<String, DailyHealth>()
+        fun absorb(days: List<DailyHealth>, overwrite: Boolean = false) {
+            days.forEach { day ->
+                val current = byDate[day.date]
+                byDate[day.date] = if (current == null) day else mergeDailyHealth(current, day, overwrite)
+            }
+        }
+        onProgress("Health stats $start – $end")
+        absorb(wellnessStats(user, start, end))
+        healthDateChunks(start, end).forEach { (from, to) ->
+            absorb(stepsStats(from, to))
+            absorb(sleepStats(from, to))
+        }
+        if (includeDailySummaries) {
+            var cursor = start
+            while (!cursor.isAfter(end)) {
+                onProgress("Health summary $cursor")
+                dailySummary(user, cursor)?.let { absorb(listOf(it), overwrite = true) }
+                cursor = cursor.plusDays(1)
+            }
+        }
+        byDate.values.sortedBy { it.date }
+    }
+
+    private fun displayName(): String {
+        val body = getJsonOrNull(connectUrl("userprofile-service", "socialProfile"))
+            ?: getJson(connectUrl("userprofile-service", "userprofile"))
+        return parseDisplayName(body) ?: error("Garmin profile did not include a display name.")
+    }
+
+    private fun wellnessStats(user: String, start: LocalDate, end: LocalDate): List<DailyHealth> {
+        val url = HttpUrl.Builder()
+            .scheme("https").host("connectapi.garmin.com")
+            .addPathSegment("userstats-service").addPathSegment("wellness").addPathSegment("daily")
+            .addPathSegment(user)
+            .addQueryParameter("fromDate", start.toString())
+            .addQueryParameter("untilDate", end.toString())
+            .addQueryParameter("metricId", "60")
+            .addQueryParameter("metricId", "22")
+            .addQueryParameter("metricId", "23")
+            .build()
+            .toString()
+        return parseWellnessStats(getJsonOrNull(url).orEmpty())
+    }
+
+    private fun stepsStats(start: LocalDate, end: LocalDate): List<DailyHealth> {
+        val url = connectUrl("usersummary-service", "stats", "steps", "daily", start.toString(), end.toString())
+        return parseStepsStats(getJsonOrNull(url).orEmpty())
+    }
+
+    private fun sleepStats(start: LocalDate, end: LocalDate): List<DailyHealth> {
+        val url = connectUrl("sleep-service", "stats", "sleep", "daily", start.toString(), end.toString())
+        return parseSleepStats(getJsonOrNull(url).orEmpty())
+    }
+
+    private fun dailySummary(user: String, day: LocalDate): DailyHealth? {
+        val url = HttpUrl.Builder()
+            .scheme("https").host("connectapi.garmin.com")
+            .addPathSegment("usersummary-service").addPathSegment("usersummary").addPathSegment("daily")
+            .addPathSegment(user)
+            .addQueryParameter("calendarDate", day.toString())
+            .build()
+            .toString()
+        return getJsonOrNull(url)?.let { parseDailySummary(it) }
+    }
+
+    private fun connectUrl(vararg segments: String): String {
+        val b = HttpUrl.Builder().scheme("https").host("connectapi.garmin.com")
+        segments.forEach { b.addPathSegment(it) }
+        return b.build().toString()
+    }
+
+    private fun getJsonOrNull(url: String): String? {
+        val req = Request.Builder().url(url).get().jsonHeaders().build()
+        val (code, text) = executeRaw(req)
+        if (code == 404 || code == 204 || text.isBlank()) return null
+        if (code !in 200..299) {
+            throw GarminApiException(code, url, bodyShape(text))
+        }
+        val trimmed = text.trimStart()
+        if (trimmed.startsWith("<")) {
+            throw GarminApiException(code, url, "Garmin returned ${bodyShape(text)} instead of JSON")
+        }
+        return text
     }
 
     suspend fun downloadFit(externalId: String): ActivityDetail = withContext(Dispatchers.IO) {

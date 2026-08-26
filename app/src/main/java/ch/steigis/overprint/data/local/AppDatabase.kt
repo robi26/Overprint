@@ -201,14 +201,15 @@ interface LapDao {
 }
 
 @Database(
-    entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class],
-    version = 3,
+    entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class, DailyHealthEntity::class],
+    version = 4,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun activities(): ActivityDao
     abstract fun tracks(): TrackDao
     abstract fun laps(): LapDao
+    abstract fun health(): DailyHealthDao
 
     @Transaction
     suspend fun replaceDetail(activity: ActivityEntity, track: List<TrackPointEntity>, laps: List<LapEntity>) {
@@ -223,6 +224,31 @@ abstract class AppDatabase : RoomDatabase() {
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE activities ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS daily_health (
+                date TEXT NOT NULL PRIMARY KEY,
+                steps REAL, stepGoal REAL, distanceMeters REAL,
+                caloriesTotal REAL, caloriesActive REAL, caloriesBmr REAL,
+                restingHr REAL, minHr REAL, maxHr REAL,
+                sleepSeconds REAL, sleepScore REAL, sleepDeepSeconds REAL,
+                sleepLightSeconds REAL, sleepRemSeconds REAL, sleepAwakeSeconds REAL,
+                intensityModerate REAL, intensityVigorous REAL,
+                stressAvg REAL, stressMax REAL,
+                bodyBatteryCharged REAL, bodyBatteryDrained REAL,
+                bodyBatteryHigh REAL, bodyBatteryLow REAL, bodyBatteryLatest REAL,
+                floorsUp REAL, floorsDown REAL,
+                spo2Avg REAL, spo2Min REAL,
+                respirationAvg REAL, respirationMin REAL, respirationMax REAL,
+                updatedAtMillis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
     }
 }
 
