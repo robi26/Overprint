@@ -19,6 +19,7 @@ import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.HealthSample
+import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.DataSource
 import okhttp3.Cookie
 import okhttp3.CookieJar
@@ -268,6 +269,7 @@ class GarminClient {
         start: LocalDate,
         end: LocalDate,
         includeDailySummaries: Boolean,
+        summaryDates: Set<String>? = null,
         onProgress: (String) -> Unit = {},
     ): List<DailyHealth> = withContext(Dispatchers.IO) {
         val user = displayName()
@@ -288,8 +290,11 @@ class GarminClient {
         if (includeDailySummaries) {
             var cursor = start
             while (!cursor.isAfter(end)) {
-                onProgress("Health summary $cursor")
-                dailySummary(user, cursor)?.let { absorb(listOf(it), overwrite = true) }
+                val iso = cursor.toString()
+                if (summaryDates == null || iso in summaryDates) {
+                    onProgress("Health summary $cursor")
+                    dailySummary(user, cursor)?.let { absorb(listOf(it), overwrite = true) }
+                }
                 cursor = cursor.plusDays(1)
             }
         }
@@ -303,25 +308,48 @@ class GarminClient {
     suspend fun pullHealthSeries(
         start: LocalDate,
         end: LocalDate,
+        metricsForDate: (String) -> Set<HealthSeries> = { HealthSeries.entries.toSet() },
         onProgress: (String) -> Unit = {},
     ): List<HealthSample> = withContext(Dispatchers.IO) {
         val user = displayName()
         val samples = mutableListOf<HealthSample>()
+        val bodyBatteryDates = mutableSetOf<String>()
         var cursor = start
         while (!cursor.isAfter(end)) {
-            onProgress("Health series $cursor")
             val date = cursor.toString()
-            samples += parseHeartRateSeries(healthJson(heartRateUrl(user, date)), date)
-            samples += parseStepsChart(healthJson(stepsChartUrl(user, date)), date)
-            samples += parseStressSeries(healthJson(stressUrl(date)), date)
-            samples += parseSleepStages(healthJson(sleepSeriesUrl(user, date)), date)
-            samples += parseSpo2Series(healthJson(spo2Url(date)), date)
-            samples += parseRespirationSeries(healthJson(respirationUrl(date)), date)
-            samples += parseFloorsSeries(healthJson(floorsUrl(date)), date)
+            val wanted = metricsForDate(date)
+            if (wanted.isNotEmpty()) onProgress("Health series $cursor")
+            if (HealthSeries.HEART_RATE in wanted) {
+                samples += parseHeartRateSeries(healthJson(heartRateUrl(user, date)), date)
+            }
+            if (HealthSeries.STEPS in wanted) {
+                samples += parseStepsChart(healthJson(stepsChartUrl(user, date)), date)
+            }
+            if (HealthSeries.STRESS in wanted) {
+                samples += parseStressSeries(healthJson(stressUrl(date)), date)
+            }
+            if (HealthSeries.SLEEP in wanted) {
+                samples += parseSleepStages(healthJson(sleepSeriesUrl(user, date)), date)
+            }
+            if (HealthSeries.SPO2 in wanted) {
+                samples += parseSpo2Series(healthJson(spo2Url(date)), date)
+            }
+            if (HealthSeries.RESPIRATION in wanted) {
+                samples += parseRespirationSeries(healthJson(respirationUrl(date)), date)
+            }
+            if (HealthSeries.FLOORS in wanted) {
+                samples += parseFloorsSeries(healthJson(floorsUrl(date)), date)
+            }
+            if (HealthSeries.BODY_BATTERY in wanted) bodyBatteryDates += date
             cursor = cursor.plusDays(1)
         }
-        onProgress("Health series body battery $start – $end")
-        samples += parseBodyBatteryReports(healthJson(bodyBatteryUrl(start, end)))
+        if (bodyBatteryDates.isNotEmpty()) {
+            val bbStart = LocalDate.parse(bodyBatteryDates.min())
+            val bbEnd = LocalDate.parse(bodyBatteryDates.max())
+            onProgress("Health series body battery $bbStart – $bbEnd")
+            samples += parseBodyBatteryReports(healthJson(bodyBatteryUrl(bbStart, bbEnd)))
+                .filter { it.date in bodyBatteryDates }
+        }
         samples.associateBy { Triple(it.date, it.metric, it.timestampMillis) }.values.toList()
     }
 

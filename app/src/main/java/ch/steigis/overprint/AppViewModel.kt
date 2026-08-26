@@ -198,7 +198,8 @@ class AppViewModel(
             fetchDailyHealthIfMissing(date)
             val samples = withContext(Dispatchers.IO) { repo.healthSamples(date) }
             _state.update { it.copy(healthSamples = samples, healthSamplesDate = date, healthSeriesLoading = false) }
-            val canFetch = (samples.isEmpty() || samples.none { it.metric == HealthSeries.FLOORS }) &&
+            val missingSeries = HealthSeries.entries.any { metric -> samples.none { it.metric == metric } }
+            val canFetch = missingSeries &&
                 date !in seriesFetchedDates &&
                 _state.value.settings.hasGarminCredentials &&
                 !_state.value.garminSync.running

@@ -30,6 +30,12 @@ interface HealthSampleDao {
     @Query("SELECT COUNT(*) FROM health_samples WHERE date = :date AND metric = :metric")
     suspend fun countFor(date: String, metric: String): Int
 
+    @Query("SELECT DISTINCT metric FROM health_samples WHERE date = :date")
+    suspend fun metricsForDate(date: String): List<String>
+
+    @Query("SELECT DISTINCT date AS date, metric AS metric FROM health_samples WHERE date BETWEEN :start AND :end")
+    suspend fun presentMetrics(start: String, end: String): List<HealthMetricKey>
+
     @Query("DELETE FROM health_samples WHERE date = :date AND metric = :metric")
     suspend fun deleteFor(date: String, metric: String)
 
@@ -55,4 +61,9 @@ internal fun HealthSample.toEntity() = HealthSampleEntity(
     metric = metric.name,
     timestampMillis = timestampMillis,
     value = value,
+)
+
+data class HealthMetricKey(
+    val date: String,
+    val metric: String,
 )

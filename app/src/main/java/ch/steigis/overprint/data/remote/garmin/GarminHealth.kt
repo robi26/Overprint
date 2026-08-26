@@ -22,6 +22,14 @@ private val json = Json { ignoreUnknownKeys = true }
 internal const val HEALTH_RECENT_DAYS = 14
 internal const val HEALTH_HISTORY_DAYS = 90
 
+internal fun healthSeriesToDownload(
+    stored: Set<HealthSeries>,
+    refreshAll: Boolean,
+): Set<HealthSeries> {
+    if (refreshAll) return HealthSeries.entries.toSet()
+    return HealthSeries.entries.filterNot { it in stored }.toSet()
+}
+
 internal fun healthRecentRange(today: LocalDate = LocalDate.now()): Pair<LocalDate, LocalDate> =
     today.minusDays((HEALTH_RECENT_DAYS - 1).toLong()) to today
 

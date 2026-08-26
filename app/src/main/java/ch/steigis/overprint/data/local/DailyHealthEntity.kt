@@ -58,6 +58,9 @@ interface DailyHealthDao {
     @Query("SELECT MIN(date) FROM daily_health")
     suspend fun oldestDate(): String?
 
+    @Query("SELECT date FROM daily_health WHERE date BETWEEN :start AND :end")
+    suspend fun datesInRange(start: String, end: String): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: DailyHealthEntity)
 }

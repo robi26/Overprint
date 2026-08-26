@@ -4,6 +4,7 @@ import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.data.remote.garmin.healthDateChunks
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
+import ch.steigis.overprint.data.remote.garmin.healthSeriesToDownload
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.data.remote.garmin.parseBodyBatteryReports
 import ch.steigis.overprint.data.remote.garmin.parseDailySummary
@@ -49,6 +50,24 @@ class GarminHealthTest {
         val beforeSync = healthHistoryRange(oldestStored = null, today = today)
         assertEquals(LocalDate.of(2026, 5, 13), beforeSync.first)
         assertEquals(LocalDate.of(2026, 8, 10), beforeSync.second)
+    }
+
+    @Test
+    fun downloadsOnlyMissingSeriesUnlessRefreshingToday() {
+        val stored = setOf(HealthSeries.HEART_RATE, HealthSeries.STEPS)
+        assertEquals(
+            setOf(
+                HealthSeries.STRESS,
+                HealthSeries.BODY_BATTERY,
+                HealthSeries.SLEEP,
+                HealthSeries.SPO2,
+                HealthSeries.RESPIRATION,
+                HealthSeries.FLOORS,
+            ),
+            healthSeriesToDownload(stored, refreshAll = false),
+        )
+        assertEquals(HealthSeries.entries.toSet(), healthSeriesToDownload(stored, refreshAll = true))
+        assertTrue(healthSeriesToDownload(HealthSeries.entries.toSet(), refreshAll = false).isEmpty())
     }
 
     @Test

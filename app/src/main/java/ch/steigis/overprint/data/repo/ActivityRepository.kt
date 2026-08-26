@@ -18,6 +18,7 @@ import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.data.remote.garmin.garminReachedKnownHistory
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
+import ch.steigis.overprint.data.remote.garmin.healthSeriesToDownload
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
@@ -25,6 +26,7 @@ import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.DataSource
 import ch.steigis.overprint.domain.model.HealthSample
+import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.GeoPoint
 import ch.steigis.overprint.domain.model.GpsTrack
 import ch.steigis.overprint.domain.model.Lap
@@ -60,11 +62,16 @@ class ActivityRepository(
     suspend fun syncHealthSeriesForDate(date: String): Int {
         val prefs = settings.settings.first()
         if (!prefs.hasGarminCredentials) return 0
+        val stored = db.healthSamples().metricsForDate(date)
+            .mapNotNull { runCatching { HealthSeries.valueOf(it) }.getOrNull() }
+            .toSet()
+        val wanted = healthSeriesToDownload(stored, refreshAll = false)
+        if (wanted.isEmpty()) return 0
         val day = java.time.LocalDate.parse(date)
         val client = GarminClient()
         authenticate(client, prefs) {}
-        val series = client.pullHealthSeries(day, day)
-        storeHealthSeries(series, overwrite = true)
+        val series = client.pullHealthSeries(day, day) { if (it == date) wanted else emptySet() }
+        storeHealthSeries(series, overwriteDates = emptySet())
         return series.size
     }
 
@@ -212,7 +219,7 @@ class ActivityRepository(
         runCatching {
             progress(GarminSyncProgress(running = true, message = "Updating recent health…"))
             val (start, end) = healthRecentRange()
-            pullAndStoreHealth(client, start, end, overwrite = true) { message ->
+            pullAndStoreHealth(client, start, end, refreshToday = true) { message ->
                 progress(GarminSyncProgress(running = true, message = message, warnings = warnings.toList()))
             }
         }.onFailure { err ->
@@ -243,7 +250,7 @@ class ActivityRepository(
             return
         }
         progress(GarminSyncProgress(running = true, message = "Loading health $start – $end"))
-        val stored = pullAndStoreHealth(client, start, end, overwrite = false) { message ->
+        val stored = pullAndStoreHealth(client, start, end, refreshToday = false) { message ->
             progress(GarminSyncProgress(running = true, message = message))
         }
         progress(
@@ -260,19 +267,55 @@ class ActivityRepository(
         client: GarminClient,
         start: java.time.LocalDate,
         end: java.time.LocalDate,
-        overwrite: Boolean,
+        refreshToday: Boolean,
         onProgress: (String) -> Unit,
     ): Int {
-        val days = client.pullHealth(start, end, includeDailySummaries = true, onProgress = onProgress)
+        val todayIso = java.time.LocalDate.now().toString()
+        val knownDates = db.health().datesInRange(start.toString(), end.toString()).toSet()
+        val summaryDates = buildSet {
+            var cursor = start
+            while (!cursor.isAfter(end)) {
+                val iso = cursor.toString()
+                if (iso == todayIso && refreshToday) add(iso)
+                else if (iso !in knownDates) add(iso)
+                cursor = cursor.plusDays(1)
+            }
+        }
+        val days = client.pullHealth(
+            start,
+            end,
+            includeDailySummaries = summaryDates.isNotEmpty(),
+            summaryDates = summaryDates,
+            onProgress = onProgress,
+        )
         val now = System.currentTimeMillis()
         days.forEach { incoming ->
             val existing = db.health().byDate(incoming.date)?.toModel()
+            val overwrite = refreshToday && incoming.date == todayIso
             val merged = if (existing == null) incoming else mergeDailyHealth(existing, incoming, overwrite)
             db.health().upsert(merged.copy(updatedAtMillis = now).toEntity())
         }
+        val storedMetrics = db.healthSamples().presentMetrics(start.toString(), end.toString())
+            .groupBy({ it.date }, { it.metric })
+            .mapValues { (_, names) ->
+                names.mapNotNull { runCatching { HealthSeries.valueOf(it) }.getOrNull() }.toSet()
+            }
         runCatching {
-            val series = client.pullHealthSeries(start, end, onProgress)
-            storeHealthSeries(series, overwrite)
+            val series = client.pullHealthSeries(
+                start,
+                end,
+                metricsForDate = { date ->
+                    healthSeriesToDownload(
+                        stored = storedMetrics[date].orEmpty(),
+                        refreshAll = refreshToday && date == todayIso,
+                    )
+                },
+                onProgress = onProgress,
+            )
+            storeHealthSeries(
+                series,
+                overwriteDates = if (refreshToday) setOf(todayIso) else emptySet(),
+            )
         }.onFailure { err ->
             if (err is CancellationException) throw err
             if (err is GarminApiException && (err.isAuthFailure || err.httpCode == 429)) throw err
@@ -280,10 +323,10 @@ class ActivityRepository(
         return days.size
     }
 
-    private suspend fun storeHealthSeries(samples: List<HealthSample>, overwrite: Boolean) {
+    private suspend fun storeHealthSeries(samples: List<HealthSample>, overwriteDates: Set<String>) {
         samples.groupBy { it.date to it.metric }.forEach { (key, points) ->
             val (date, metric) = key
-            if (!overwrite && db.healthSamples().countFor(date, metric.name) > 0) return@forEach
+            if (date !in overwriteDates && db.healthSamples().countFor(date, metric.name) > 0) return@forEach
             db.healthSamples().replaceMetric(date, metric.name, points.map { it.toEntity() })
         }
     }
