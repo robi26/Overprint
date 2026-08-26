@@ -401,7 +401,7 @@ private fun JsonObject.str(key: String): String? =
     runCatching { this[key]?.jsonPrimitive?.contentOrNull }.getOrNull()?.takeIf { it.isNotBlank() && it != "null" }
 
 private fun JsonObject.date(): String? =
-    str("calendarDate") ?: str("calendarDate") ?: str("date") ?: str("day")
+    str("calendarDate") ?: str("date") ?: str("day")
 
 private fun JsonObject.num(vararg keys: String): Double? {
     keys.forEach { key ->
