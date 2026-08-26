@@ -9,6 +9,14 @@ val releaseStoreFilePath = System.getenv("RELEASE_STORE_FILE")
     ?: project.findProperty("RELEASE_STORE_FILE") as String?
 val releaseStoreFile = releaseStoreFilePath?.let { file(it) }?.takeIf { it.isFile }
 
+// Tag builds pass -PVERSION_NAME=0.9.1 (from v0.9.1). Local / untagged CI keeps the fallback.
+val versionNameOverride = gradleString("VERSION_NAME")?.removePrefix("v")
+val appVersionName = versionNameOverride ?: "0.8.0"
+val appVersionCode = gradleString("VERSION_CODE")?.toIntOrNull()
+    ?: versionNameOverride?.let(::versionCodeFromName)
+    ?: 8
+logger.lifecycle("App version $appVersionName ($appVersionCode)")
+
 android {
     namespace = "ch.steigis.overprint"
     compileSdk = 35
@@ -17,8 +25,8 @@ android {
         applicationId = "ch.steigis.overprint"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.8.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -117,4 +125,21 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("com.google.truth:truth:1.4.4")
+}
+
+private fun gradleString(name: String): String? =
+    findProperty(name)?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }
+
+/** 0.9.1 → 901, 1.2.3 → 10203. Parts must be 0..99. */
+private fun versionCodeFromName(name: String): Int {
+    val parts = name.substringBefore("-").split('.')
+    require(parts.size in 2..3) { "VERSION_NAME must be like 0.9.1, got '$name'" }
+    val major = parts[0].toIntOrNull() ?: error("Invalid VERSION_NAME: $name")
+    val minor = parts[1].toIntOrNull() ?: error("Invalid VERSION_NAME: $name")
+    val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
+    require(major in 0..99 && minor in 0..99 && patch in 0..99) {
+        "VERSION_NAME parts must be 0..99: $name"
+    }
+    return major * 10000 + minor * 100 + patch
 }

@@ -51,6 +51,13 @@ jobs:
           if [ -f "$GITHUB_WORKSPACE/release.jks" ]; then
             export RELEASE_STORE_FILE="$GITHUB_WORKSPACE/release.jks"
           fi
+          VERSION_NAME=""
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION_NAME="${TAG#v}"
+            echo "Using version $VERSION_NAME from tag $TAG"
+          fi
+          export VERSION_NAME
           if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ] || [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             ./gradlew assembleRelease
           else
