@@ -1,6 +1,6 @@
 package ch.steigis.overprint.domain.model
 
-/** One calendar day's wellness totals. Timeseries samples will live in a separate table later. */
+/** One calendar day's wellness totals. All-day curves live in health_samples. */
 data class DailyHealth(
     val date: String,
     val steps: Double? = null,
@@ -29,6 +29,7 @@ data class DailyHealth(
     val bodyBatteryLatest: Double? = null,
     val floorsUp: Double? = null,
     val floorsDown: Double? = null,
+    val floorsGoal: Double? = null,
     val spo2Avg: Double? = null,
     val spo2Min: Double? = null,
     val respirationAvg: Double? = null,

@@ -1,6 +1,8 @@
 package ch.steigis.overprint.data.remote.garmin
 
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthSample
+import ch.steigis.overprint.domain.model.HealthSeries
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -8,10 +10,12 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 private val json = Json { ignoreUnknownKeys = true }
 
@@ -80,6 +84,7 @@ internal fun mergeDailyHealth(base: DailyHealth, extra: DailyHealth, overwrite: 
         bodyBatteryLatest = base.bodyBatteryLatest.pick(extra.bodyBatteryLatest),
         floorsUp = base.floorsUp.pick(extra.floorsUp),
         floorsDown = base.floorsDown.pick(extra.floorsDown),
+        floorsGoal = base.floorsGoal.pick(extra.floorsGoal),
         spo2Avg = base.spo2Avg.pick(extra.spo2Avg),
         spo2Min = base.spo2Min.pick(extra.spo2Min),
         respirationAvg = base.respirationAvg.pick(extra.respirationAvg),
@@ -115,6 +120,12 @@ internal fun parseDailySummary(body: String): DailyHealth? {
         bodyBatteryLatest = root.num("bodyBatteryMostRecentValue", "bodyBatteryAtWakeTime"),
         floorsUp = root.num("floorsAscended", "floorsClimbed"),
         floorsDown = root.num("floorsDescended"),
+        floorsGoal = root.num(
+            "userFloorsAscendedGoal",
+            "floorsAscendedGoal",
+            "dailyFloorGoal",
+            "wellnessUserFloorsAscendedGoal",
+        ),
         spo2Avg = root.num("averageSpo2Value", "averageSpo2"),
         spo2Min = root.num("lowestSpo2Value", "lowestSpo2"),
         respirationAvg = root.num("avgWakingRespirationValue", "averageRespirationValue"),
@@ -132,6 +143,23 @@ internal fun parseStepsStats(body: String): List<DailyHealth> =
             steps = o.num("totalSteps", "steps"),
             stepGoal = o.num("stepGoal", "dailyStepGoal", "goal"),
             distanceMeters = o.num("totalDistance", "totalDistanceMeters", "distance"),
+        ).takeUnless { it.isEmpty() }
+    }
+
+internal fun parseFloorsStats(body: String): List<DailyHealth> =
+    body.jsonElements("individualStats").mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        val values = o.obj("values") ?: o
+        val date = o.date() ?: values.date() ?: return@mapNotNull null
+        DailyHealth(
+            date = date,
+            floorsUp = values.num("wellnessFloorsAscended", "floorsAscended", "floorsUp"),
+            floorsDown = values.num("wellnessFloorsDescended", "floorsDescended"),
+            floorsGoal = values.num(
+                "wellnessUserFloorsAscendedGoal",
+                "userFloorsAscendedGoal",
+                "floorsAscendedGoal",
+            ),
         ).takeUnless { it.isEmpty() }
     }
 
@@ -166,6 +194,15 @@ internal fun parseWellnessStats(body: String): List<DailyHealth> {
     map.series("WELLNESS_RESTING_HEART_RATE").forEach { (date, value) ->
         put(date, DailyHealth(date, restingHr = value))
     }
+    map.series("WELLNESS_TOTAL_STEP_GOAL").forEach { (date, value) ->
+        put(date, DailyHealth(date, stepGoal = value))
+    }
+    map.series("WELLNESS_FLOORS_ASCENDED").forEach { (date, value) ->
+        put(date, DailyHealth(date, floorsUp = value))
+    }
+    map.series("WELLNESS_USER_FLOORS_ASCENDED_GOAL").forEach { (date, value) ->
+        put(date, DailyHealth(date, floorsGoal = value))
+    }
     map.series("WELLNESS_ACTIVE_CALORIES").forEach { (date, value) ->
         put(date, DailyHealth(date, caloriesActive = value))
     }
@@ -183,12 +220,162 @@ internal fun parseDisplayName(body: String): String? {
     return root.str("displayName") ?: root.obj("userInfo")?.str("displayName")
 }
 
+internal fun parseHeartRateSeries(body: String, date: String): List<HealthSample> {
+    val root = body.jsonObjectOrNull() ?: return emptyList()
+    val day = root.date() ?: date
+    val start = root.gmtMillis("startTimestampGMT", "startTimestampLocal")
+    val pairs = root.pairs("heartRateValues")
+        .ifEmpty { root.offsetMap("timeOffsetHeartRateSamples", start) }
+    return pairs.toSamples(day, HealthSeries.HEART_RATE, dropNegative = true)
+}
+
+internal fun parseStepsChart(body: String, date: String): List<HealthSample> =
+    body.jsonElements().mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        val ts = o.gmtMillis("startGMT", "startTimestampGMT") ?: return@mapNotNull null
+        val steps = o.num("steps") ?: return@mapNotNull null
+        HealthSample(date, HealthSeries.STEPS, ts, steps)
+    }
+
+internal fun parseStressSeries(body: String, date: String): List<HealthSample> {
+    val root = body.jsonObjectOrNull() ?: return emptyList()
+    val day = root.date() ?: date
+    return root.pairs("stressValuesArray").toSamples(day, HealthSeries.STRESS, dropNegative = true) +
+        root.triples("bodyBatteryValuesArray").toSamples(day, HealthSeries.BODY_BATTERY, dropNegative = true)
+}
+
+internal fun parseBodyBatteryReports(body: String): List<HealthSample> =
+    body.jsonElements().flatMap { el ->
+        val o = el as? JsonObject ?: return@flatMap emptyList()
+        val day = o.date() ?: return@flatMap emptyList()
+        o.triples("bodyBatteryValuesArray").toSamples(day, HealthSeries.BODY_BATTERY, dropNegative = true)
+    }
+
+internal fun parseSleepStages(body: String, date: String): List<HealthSample> {
+    val root = body.jsonObjectOrNull() ?: return emptyList()
+    val dto = root.obj("dailySleepDTO") ?: root
+    val day = dto.date() ?: date
+    val levels = dto["sleepLevels"] as? JsonArray
+        ?: root["sleepLevels"] as? JsonArray
+        ?: return emptyList()
+    return levels.mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        val ts = o.gmtMillis("startGMT", "startTimeGMT", "startTimestampGMT") ?: return@mapNotNull null
+        val stage = o.num("activityLevel", "level") ?: return@mapNotNull null
+        HealthSample(day, HealthSeries.SLEEP, ts, stage)
+    }
+}
+
+internal fun parseSpo2Series(body: String, date: String): List<HealthSample> {
+    val root = body.jsonObjectOrNull() ?: return emptyList()
+    val day = root.date() ?: date
+    val start = root.gmtMillis("startTimeGMT", "sleepStartTimestampGMT", "startTimestampGMT")
+    val pairs = root.pairs("spO2HourlyAverages", "spo2HourlyAverages")
+        .ifEmpty { root.offsetMap("timeOffsetSleepSpo2", start) }
+        .ifEmpty { root.offsetMap("timeOffsetSleepSpo2Values", start) }
+    return pairs.toSamples(day, HealthSeries.SPO2, dropNegative = true)
+}
+
+internal fun parseRespirationSeries(body: String, date: String): List<HealthSample> {
+    val root = body.jsonObjectOrNull() ?: return emptyList()
+    val day = root.date() ?: date
+    return root.pairs("respirationValuesArray").toSamples(day, HealthSeries.RESPIRATION, dropNegative = true)
+}
+
+internal fun parseFloorsSeries(body: String, date: String): List<HealthSample> {
+    val root = body.jsonObjectOrNull() ?: return emptyList()
+    val day = root.date() ?: date
+    val start = root.gmtMillis("startTimestampGMT")
+    val rows = (root["floorValuesArray"] as? JsonArray) ?: (root["floorsValuesArray"] as? JsonArray)
+    val pairs = if (rows != null) {
+        rows.mapNotNull { el ->
+            val row = el as? JsonArray ?: return@mapNotNull null
+            val ts = row.timeMillis(0) ?: return@mapNotNull null
+            val ascended = row.number(2) ?: row.number(1) ?: return@mapNotNull null
+            ts to ascended
+        }
+    } else {
+        root.offsetMap("values", start)
+    }
+    return pairs.toSamples(day, HealthSeries.FLOORS, dropNegative = false)
+}
+
+private fun List<Pair<Long, Double>>.toSamples(
+    date: String,
+    metric: HealthSeries,
+    dropNegative: Boolean,
+): List<HealthSample> = mapNotNull { (ts, value) ->
+    if (!value.isFinite()) return@mapNotNull null
+    if (dropNegative && value < 0) return@mapNotNull null
+    HealthSample(date, metric, ts, value)
+}
+
+private fun JsonObject.pairs(vararg keys: String): List<Pair<Long, Double>> {
+    val rows = keys.firstNotNullOfOrNull { this[it] as? JsonArray } ?: return emptyList()
+    return rows.mapNotNull { el ->
+        val row = el as? JsonArray ?: return@mapNotNull null
+        val ts = row.epochMillis(0) ?: return@mapNotNull null
+        val value = row.number(1) ?: return@mapNotNull null
+        ts to value
+    }
+}
+
+private fun JsonObject.triples(key: String): List<Pair<Long, Double>> {
+    val rows = this[key] as? JsonArray ?: return emptyList()
+    return rows.mapNotNull { el ->
+        val row = el as? JsonArray ?: return@mapNotNull null
+        val ts = row.epochMillis(0) ?: return@mapNotNull null
+        val value = row.number(2) ?: row.number(1) ?: return@mapNotNull null
+        ts to value
+    }
+}
+
+private fun JsonObject.offsetMap(key: String, startMillis: Long?): List<Pair<Long, Double>> {
+    if (startMillis == null) return emptyList()
+    val map = this[key] as? JsonObject ?: return emptyList()
+    return map.entries.mapNotNull { (offset, el) ->
+        val seconds = offset.toLongOrNull() ?: return@mapNotNull null
+        val value = (el as? JsonPrimitive)?.doubleOrNull ?: return@mapNotNull null
+        startMillis + seconds * 1000L to value
+    }.sortedBy { it.first }
+}
+
+private fun JsonArray.epochMillis(index: Int): Long? {
+    val n = number(index) ?: return null
+    val ts = n.toLong()
+    return if (ts in 1_000_000_000L until 1_000_000_000_000L) ts * 1000L else ts
+}
+
+private fun JsonArray.timeMillis(index: Int): Long? =
+    epochMillis(index) ?: (getOrNull(index) as? JsonPrimitive)?.contentOrNull?.let(::parseGmtMillis)
+
+private fun JsonArray.number(index: Int): Double? {
+    val el = getOrNull(index) as? JsonPrimitive ?: return null
+    return el.doubleOrNull ?: el.longOrNull?.toDouble() ?: el.contentOrNull?.toDoubleOrNull()
+}
+
+private fun JsonObject.gmtMillis(vararg keys: String): Long? =
+    keys.firstNotNullOfOrNull { key -> str(key)?.let { parseGmtMillis(it) } }
+
+internal fun parseGmtMillis(raw: String): Long? {
+    raw.trim().toLongOrNull()?.let { ts ->
+        return if (ts in 1_000_000_000L until 1_000_000_000_000L) ts * 1000L else ts
+    }
+    val trimmed = raw.trim().removeSuffix("Z")
+    val local = runCatching {
+        LocalDateTime.parse(trimmed, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+    }.getOrNull() ?: runCatching {
+        LocalDateTime.parse(trimmed.replace(Regex("\\.\\d+$"), ""), DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+    }.getOrNull() ?: return null
+    return local.toInstant(ZoneOffset.UTC).toEpochMilli()
+}
+
 private fun DailyHealth.isEmpty(): Boolean = listOf(
     steps, stepGoal, distanceMeters, caloriesTotal, caloriesActive, caloriesBmr,
     restingHr, minHr, maxHr, sleepSeconds, sleepScore, sleepDeepSeconds, sleepLightSeconds,
     sleepRemSeconds, sleepAwakeSeconds, intensityModerate, intensityVigorous, stressAvg, stressMax,
     bodyBatteryCharged, bodyBatteryDrained, bodyBatteryHigh, bodyBatteryLow, bodyBatteryLatest,
-    floorsUp, floorsDown, spo2Avg, spo2Min, respirationAvg, respirationMin, respirationMax,
+    floorsUp, floorsDown, floorsGoal, spo2Avg, spo2Min, respirationAvg, respirationMin, respirationMax,
 ).all { it == null }
 
 private fun String.jsonObjectOrNull(): JsonObject? =

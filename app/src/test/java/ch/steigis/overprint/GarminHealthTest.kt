@@ -5,10 +5,20 @@ import ch.steigis.overprint.data.remote.garmin.healthDateChunks
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
+import ch.steigis.overprint.data.remote.garmin.parseBodyBatteryReports
 import ch.steigis.overprint.data.remote.garmin.parseDailySummary
+import ch.steigis.overprint.data.remote.garmin.parseFloorsSeries
+import ch.steigis.overprint.data.remote.garmin.parseFloorsStats
+import ch.steigis.overprint.data.remote.garmin.parseHeartRateSeries
+import ch.steigis.overprint.data.remote.garmin.parseRespirationSeries
+import ch.steigis.overprint.data.remote.garmin.parseSleepStages
 import ch.steigis.overprint.data.remote.garmin.parseSleepStats
+import ch.steigis.overprint.data.remote.garmin.parseSpo2Series
+import ch.steigis.overprint.data.remote.garmin.parseStepsChart
 import ch.steigis.overprint.data.remote.garmin.parseStepsStats
+import ch.steigis.overprint.data.remote.garmin.parseStressSeries
 import ch.steigis.overprint.data.remote.garmin.parseWellnessStats
+import ch.steigis.overprint.domain.model.HealthSeries
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -67,6 +77,7 @@ class GarminHealthTest {
               "bodyBatteryMostRecentValue": 55,
               "floorsAscended": 12.0,
               "floorsDescended": 11.0,
+              "userFloorsAscendedGoal": 10,
               "averageSpo2Value": 96,
               "lowestSpo2Value": 91,
               "avgWakingRespirationValue": 14.2,
@@ -96,6 +107,7 @@ class GarminHealthTest {
         assertEquals(22.0, day.bodyBatteryLow!!, 0.0)
         assertEquals(55.0, day.bodyBatteryLatest!!, 0.0)
         assertEquals(12.0, day.floorsUp!!, 0.0)
+        assertEquals(10.0, day.floorsGoal!!, 0.0)
         assertEquals(96.0, day.spo2Avg!!, 0.0)
         assertEquals(14.2, day.respirationAvg!!, 0.01)
     }
@@ -107,6 +119,18 @@ class GarminHealthTest {
         )
         assertEquals(8000.0, steps.single().steps!!, 0.0)
         assertEquals(6400.0, steps.single().distanceMeters!!, 0.0)
+
+        val floors = parseFloorsStats(
+            """
+            [{"calendarDate":"2026-08-19","values":{
+              "wellnessFloorsAscended":8,
+              "wellnessFloorsDescended":7,
+              "wellnessUserFloorsAscendedGoal":10
+            }}]
+            """.trimIndent(),
+        )
+        assertEquals(8.0, floors.single().floorsUp!!, 0.0)
+        assertEquals(10.0, floors.single().floorsGoal!!, 0.0)
 
         val sleep = parseSleepStats(
             """
@@ -162,5 +186,154 @@ class GarminHealthTest {
     fun ignoresEmptySummary() {
         assertNull(parseDailySummary("{}"))
         assertTrue(parseStepsStats("[]").isEmpty())
+    }
+
+    @Test
+    fun parsesHeartRatePairsAndDropsMissingReadings() {
+        val samples = parseHeartRateSeries(
+            """
+            {
+              "calendarDate": "2026-08-20",
+              "heartRateValues": [[1724112000000, 62], [1724112060000, -1], [1724112120000, 64]]
+            }
+            """.trimIndent(),
+            "2026-08-20",
+        )
+        assertEquals(listOf(62.0, 64.0), samples.map { it.value })
+        assertEquals(1724112000000L, samples.first().timestampMillis)
+        assertTrue(samples.all { it.metric == HealthSeries.HEART_RATE })
+        assertEquals("2026-08-20", samples.first().date)
+    }
+
+    @Test
+    fun parsesHeartRateOffsetMapFromStartGmt() {
+        val samples = parseHeartRateSeries(
+            """
+            {
+              "calendarDate": "2026-08-20",
+              "startTimestampGMT": "2026-08-20T00:00:00.0",
+              "timeOffsetHeartRateSamples": {"0": 58, "60": 59}
+            }
+            """.trimIndent(),
+            "2026-08-20",
+        )
+        assertEquals(2, samples.size)
+        assertEquals(58.0, samples[0].value, 0.0)
+        assertEquals(59.0, samples[1].value, 0.0)
+        assertEquals(60_000L, samples[1].timestampMillis - samples[0].timestampMillis)
+    }
+
+    @Test
+    fun parsesStepsChartBuckets() {
+        val samples = parseStepsChart(
+            """
+            [
+              {"startGMT":"2026-08-20T00:00:00.0","endGMT":"2026-08-20T00:15:00.0","steps":40},
+              {"startGMT":"2026-08-20T00:15:00.0","endGMT":"2026-08-20T00:30:00.0","steps":12}
+            ]
+            """.trimIndent(),
+            "2026-08-20",
+        )
+        assertEquals(listOf(40.0, 12.0), samples.map { it.value })
+        assertTrue(samples.all { it.metric == HealthSeries.STEPS })
+        assertEquals(15 * 60 * 1000L, samples[1].timestampMillis - samples[0].timestampMillis)
+    }
+
+    @Test
+    fun parsesStressAndEmbeddedBodyBattery() {
+        val samples = parseStressSeries(
+            """
+            {
+              "calendarDate": "2026-08-20",
+              "stressValuesArray": [[1724112000000, 22], [1724112060000, -1], [1724112120000, 31]],
+              "bodyBatteryValuesArray": [[1724112000000, 1, 71], [1724112120000, 1, 68]]
+            }
+            """.trimIndent(),
+            "2026-08-20",
+        )
+        val stress = samples.filter { it.metric == HealthSeries.STRESS }
+        val battery = samples.filter { it.metric == HealthSeries.BODY_BATTERY }
+        assertEquals(listOf(22.0, 31.0), stress.map { it.value })
+        assertEquals(listOf(71.0, 68.0), battery.map { it.value })
+    }
+
+    @Test
+    fun parsesBodyBatteryDailyReports() {
+        val samples = parseBodyBatteryReports(
+            """
+            [{
+              "date": "2026-08-20",
+              "bodyBatteryValuesArray": [[1724112000000, 0, 80], [1724115600000, 0, 55]]
+            }]
+            """.trimIndent(),
+        )
+        assertEquals("2026-08-20", samples.first().date)
+        assertEquals(listOf(80.0, 55.0), samples.map { it.value })
+        assertTrue(samples.all { it.metric == HealthSeries.BODY_BATTERY })
+    }
+
+    @Test
+    fun parsesSleepStageWindows() {
+        val samples = parseSleepStages(
+            """
+            {
+              "dailySleepDTO": {
+                "calendarDate": "2026-08-20",
+                "sleepLevels": [
+                  {"startGMT":"2026-08-19T22:00:00.0","endGMT":"2026-08-19T22:20:00.0","activityLevel":1.0},
+                  {"startGMT":"2026-08-19T22:20:00.0","endGMT":"2026-08-19T23:00:00.0","activityLevel":2.0}
+                ]
+              }
+            }
+            """.trimIndent(),
+            "2026-08-20",
+        )
+        assertEquals(listOf(1.0, 2.0), samples.map { it.value })
+        assertTrue(samples.all { it.metric == HealthSeries.SLEEP })
+        assertEquals(20 * 60 * 1000L, samples[1].timestampMillis - samples[0].timestampMillis)
+    }
+
+    @Test
+    fun parsesSpo2HourlyAndRespirationAndFloors() {
+        val spo2 = parseSpo2Series(
+            """{"calendarDate":"2026-08-20","spO2HourlyAverages":[[1724112000000,96],[1724115600000,95]]}""",
+            "2026-08-20",
+        )
+        assertEquals(listOf(96.0, 95.0), spo2.map { it.value })
+        assertTrue(spo2.all { it.metric == HealthSeries.SPO2 })
+
+        val breaths = parseRespirationSeries(
+            """{"calendarDate":"2026-08-20","respirationValuesArray":[[1724112000000,14.5],[1724112060000,-1]]}""",
+            "2026-08-20",
+        )
+        assertEquals(listOf(14.5), breaths.map { it.value })
+        assertTrue(breaths.all { it.metric == HealthSeries.RESPIRATION })
+
+        val floors = parseFloorsSeries(
+            """{"calendarDate":"2026-08-20","floorValuesArray":[[1724112000000,0],[1724112900000,2]]}""",
+            "2026-08-20",
+        )
+        assertEquals(listOf(0.0, 2.0), floors.map { it.value })
+        assertTrue(floors.all { it.metric == HealthSeries.FLOORS })
+
+        val garminFloors = parseFloorsSeries(
+            """
+            {"calendarDate":"2026-08-20","floorValuesArray":[
+              ["2026-08-19T22:00:00.0","2026-08-19T22:15:00.0",0,0],
+              ["2026-08-19T22:15:00.0","2026-08-19T22:30:00.0",2,1]
+            ]}
+            """.trimIndent(),
+            "2026-08-20",
+        )
+        assertEquals(listOf(0.0, 2.0), garminFloors.map { it.value })
+    }
+
+    @Test
+    fun emptySeriesBodiesYieldNoSamples() {
+        assertTrue(parseHeartRateSeries("{}", "2026-08-20").isEmpty())
+        assertTrue(parseStepsChart("[]", "2026-08-20").isEmpty())
+        assertTrue(parseStressSeries("{}", "2026-08-20").isEmpty())
+        assertTrue(parseBodyBatteryReports("[]").isEmpty())
+        assertTrue(parseSleepStages("{}", "2026-08-20").isEmpty())
     }
 }

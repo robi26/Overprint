@@ -18,11 +18,13 @@ import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.DataSource
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.FormBody
 import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.text.SimpleDateFormat
@@ -281,6 +283,7 @@ class GarminClient {
         healthDateChunks(start, end).forEach { (from, to) ->
             absorb(stepsStats(from, to))
             absorb(sleepStats(from, to))
+            absorb(floorsStats(from, to))
         }
         if (includeDailySummaries) {
             var cursor = start
@@ -291,6 +294,74 @@ class GarminClient {
             }
         }
         byDate.values.sortedBy { it.date }
+    }
+
+    /**
+     * All-day wellness curves for [start]..[end]. Per-day GETs; 404/empty days are skipped.
+     * Auth failures and rate limits still abort.
+     */
+    suspend fun pullHealthSeries(
+        start: LocalDate,
+        end: LocalDate,
+        onProgress: (String) -> Unit = {},
+    ): List<HealthSample> = withContext(Dispatchers.IO) {
+        val user = displayName()
+        val samples = mutableListOf<HealthSample>()
+        var cursor = start
+        while (!cursor.isAfter(end)) {
+            onProgress("Health series $cursor")
+            val date = cursor.toString()
+            samples += parseHeartRateSeries(healthJson(heartRateUrl(user, date)), date)
+            samples += parseStepsChart(healthJson(stepsChartUrl(user, date)), date)
+            samples += parseStressSeries(healthJson(stressUrl(date)), date)
+            samples += parseSleepStages(healthJson(sleepSeriesUrl(user, date)), date)
+            samples += parseSpo2Series(healthJson(spo2Url(date)), date)
+            samples += parseRespirationSeries(healthJson(respirationUrl(date)), date)
+            samples += parseFloorsSeries(healthJson(floorsUrl(date)), date)
+            cursor = cursor.plusDays(1)
+        }
+        onProgress("Health series body battery $start – $end")
+        samples += parseBodyBatteryReports(healthJson(bodyBatteryUrl(start, end)))
+        samples.associateBy { Triple(it.date, it.metric, it.timestampMillis) }.values.toList()
+    }
+
+    private fun heartRateUrl(user: String, date: String): String =
+        connectUrl("wellness-service", "wellness", "dailyHeartRate", user).withQuery("date" to date)
+
+    private fun stepsChartUrl(user: String, date: String): String =
+        connectUrl("wellness-service", "wellness", "dailySummaryChart", user).withQuery("date" to date)
+
+    private fun stressUrl(date: String): String =
+        connectUrl("wellness-service", "wellness", "dailyStress", date)
+
+    private fun sleepSeriesUrl(user: String, date: String): String =
+        connectUrl("wellness-service", "wellness", "dailySleepData", user)
+            .withQuery("date" to date, "nonSleepBufferMinutes" to "60")
+
+    private fun spo2Url(date: String): String =
+        connectUrl("wellness-service", "wellness", "daily", "spo2", date)
+
+    private fun respirationUrl(date: String): String =
+        connectUrl("wellness-service", "wellness", "daily", "respiration", date)
+
+    private fun floorsUrl(date: String): String =
+        connectUrl("wellness-service", "wellness", "floorsChartData", "daily", date)
+
+    private fun bodyBatteryUrl(start: LocalDate, end: LocalDate): String =
+        connectUrl("wellness-service", "wellness", "bodyBattery", "reports", "daily")
+            .withQuery("startDate" to start.toString(), "endDate" to end.toString())
+
+    private fun String.withQuery(vararg params: Pair<String, String>): String {
+        val b = toHttpUrl().newBuilder()
+        params.forEach { (key, value) -> b.addQueryParameter(key, value) }
+        return b.build().toString()
+    }
+
+    private fun healthJson(url: String): String = try {
+        getJsonOrNull(url).orEmpty()
+    } catch (err: GarminApiException) {
+        if (err.isAuthFailure || err.httpCode == 429) throw err
+        ""
     }
 
     private fun displayName(): String {
@@ -317,6 +388,11 @@ class GarminClient {
     private fun stepsStats(start: LocalDate, end: LocalDate): List<DailyHealth> {
         val url = connectUrl("usersummary-service", "stats", "steps", "daily", start.toString(), end.toString())
         return parseStepsStats(getJsonOrNull(url).orEmpty())
+    }
+
+    private fun floorsStats(start: LocalDate, end: LocalDate): List<DailyHealth> {
+        val url = connectUrl("usersummary-service", "stats", "floors", "daily", start.toString(), end.toString())
+        return parseFloorsStats(getJsonOrNull(url).orEmpty())
     }
 
     private fun sleepStats(start: LocalDate, end: LocalDate): List<DailyHealth> {

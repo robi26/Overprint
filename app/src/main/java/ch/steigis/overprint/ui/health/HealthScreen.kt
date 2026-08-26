@@ -1,5 +1,6 @@
 package ch.steigis.overprint.ui.health
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -7,19 +8,26 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material3.Button
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -28,18 +36,24 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.stats.TrendPoint
+import ch.steigis.overprint.ui.components.BarChart
 import ch.steigis.overprint.ui.components.ChartCard
+import ch.steigis.overprint.ui.components.ChartLine
 import ch.steigis.overprint.ui.components.LineChart
 import ch.steigis.overprint.ui.settings.GarminSyncStatus
 import java.time.DayOfWeek
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.temporal.TemporalAdjusters
 import java.time.format.FormatStyle
@@ -66,55 +80,90 @@ private enum class HealthRange(val label: String) {
     }
 }
 
+private enum class HealthChartStyle { BARS, LINE }
+
 private enum class HealthMetric(val label: String) {
     STEPS("Steps"),
     DISTANCE("Distance"),
     CALORIES("Calories"),
     SLEEP("Sleep"),
     SLEEP_SCORE("Sleep score"),
-    RHR("Resting HR"),
+    HEART_RATE("Heart rate"),
     STRESS("Stress"),
     BODY_BATTERY("Body battery"),
-    INTENSITY("Intensity"),
+    INTENSITY("Intensity minutes"),
     FLOORS("Floors"),
     SPO2("SpO2"),
     RESPIRATION("Breathing"),
+    ;
+
+    val style: HealthChartStyle
+        get() = when (this) {
+            STEPS, DISTANCE, CALORIES, SLEEP, INTENSITY, FLOORS -> HealthChartStyle.BARS
+            SLEEP_SCORE, HEART_RATE, STRESS, BODY_BATTERY, SPO2, RESPIRATION -> HealthChartStyle.LINE
+        }
+
+    val color: Color
+        get() = when (this) {
+            STEPS -> Color(0xFF3583F3)
+            DISTANCE -> Color(0xFF5B8C5A)
+            CALORIES -> Color(0xFFE67E22)
+            SLEEP -> Color(0xFF6C5CE7)
+            SLEEP_SCORE -> Color(0xFF9B7EDE)
+            HEART_RATE -> Color(0xFFE24B4B)
+            STRESS -> Color(0xFFF5A524)
+            BODY_BATTERY -> Color(0xFF2BB673)
+            INTENSITY -> Color(0xFFF169EF)
+            FLOORS -> Color(0xFFC8A26A)
+            SPO2 -> Color(0xFF2AA5C9)
+            RESPIRATION -> Color(0xFF7C8CFF)
+        }
+
+    val yMin: Double?
+        get() = when (this) {
+            STRESS, BODY_BATTERY, SLEEP_SCORE -> 0.0
+            SPO2 -> 80.0
+            else -> null
+        }
+
+    val yMax: Double?
+        get() = when (this) {
+            STRESS, BODY_BATTERY, SLEEP_SCORE, SPO2 -> 100.0
+            else -> null
+        }
 }
+
+private val HealthStatsOrder = listOf(
+    HealthMetric.HEART_RATE,
+    HealthMetric.STEPS,
+    HealthMetric.FLOORS,
+    HealthMetric.BODY_BATTERY,
+    HealthMetric.SLEEP,
+    HealthMetric.STRESS,
+    HealthMetric.INTENSITY,
+    HealthMetric.DISTANCE,
+    HealthMetric.CALORIES,
+    HealthMetric.SLEEP_SCORE,
+    HealthMetric.SPO2,
+    HealthMetric.RESPIRATION,
+)
 
 @Composable
 fun HealthScreen(
     days: List<DailyHealth>,
+    samples: List<HealthSample>,
+    samplesDate: String?,
+    seriesLoading: Boolean,
+    summaryLoading: Boolean,
+    healthDate: String?,
     garminSync: GarminSyncProgress,
     fmt: Formatters,
-    hasGarminCredentials: Boolean,
-    onLoadOlder: () -> Unit,
+    onLoadSamples: (String?) -> Unit,
+    onHealthDate: (String?) -> Unit,
 ) {
     var tab by remember { mutableStateOf(HealthTab.DAY) }
     Column(Modifier.fillMaxSize()) {
-        Column(
-            Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Text(
-                "Garmin refresh stores the last 14 days. Older months and years load here, 90 days at a time.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Button(
-                onClick = onLoadOlder,
-                enabled = hasGarminCredentials && !garminSync.running,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (garminSync.running) "Loading health…" else "Load older 90 days")
-            }
-            if (!hasGarminCredentials) {
-                Text(
-                    "Add your Garmin email and password in Settings first.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            GarminSyncStatus(garminSync)
-        }
+        GarminSyncStatus(garminSync, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         TabRow(selectedTabIndex = HealthTab.entries.indexOf(tab), divider = {}) {
             HealthTab.entries.forEach { item ->
                 Tab(
@@ -125,26 +174,39 @@ fun HealthScreen(
             }
         }
         when (tab) {
-            HealthTab.DAY -> HealthDayTab(days, fmt)
+            HealthTab.DAY -> HealthDayTab(
+                days, samples, samplesDate, seriesLoading, summaryLoading, garminSync.running, healthDate, fmt,
+                onLoadSamples, onHealthDate,
+            )
             HealthTab.STATS -> HealthStatsTab(days, fmt)
         }
     }
 }
 
 @Composable
-private fun HealthDayTab(days: List<DailyHealth>, fmt: Formatters) {
-    var selectedDate by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(days) {
-        selectedDate = when {
-            days.isEmpty() -> null
-            days.any { it.date == selectedDate } -> selectedDate
-            else -> days.first().date
-        }
+private fun HealthDayTab(
+    days: List<DailyHealth>,
+    samples: List<HealthSample>,
+    samplesDate: String?,
+    seriesLoading: Boolean,
+    summaryLoading: Boolean,
+    syncRunning: Boolean,
+    healthDate: String?,
+    fmt: Formatters,
+    onLoadSamples: (String?) -> Unit,
+    onHealthDate: (String?) -> Unit,
+) {
+    val selectedDate = healthDate
+    LaunchedEffect(days, selectedDate) {
+        if (selectedDate == null && days.isNotEmpty()) onHealthDate(days.first().date)
     }
-    val index = days.indexOfFirst { it.date == selectedDate }.takeIf { it >= 0 } ?: 0
-    val day = days.getOrNull(index)
-    val canGoOlder = index in 0 until days.lastIndex
-    val canGoNewer = index > 0
+    val day = days.find { it.date == selectedDate }
+    LaunchedEffect(selectedDate, syncRunning) { onLoadSamples(selectedDate) }
+    val older = selectedDate?.let { date -> days.filter { it.date < date }.maxByOrNull { it.date } }
+    val newer = selectedDate?.let { date -> days.filter { it.date > date }.minByOrNull { it.date } }
+    val daySamples = if (samplesDate == selectedDate) samples else emptyList()
+    var showPicker by remember { mutableStateOf(false) }
+    val availableDates = remember(days) { days.map { it.date }.toSet() }
 
     Column(
         Modifier
@@ -153,7 +215,7 @@ private fun HealthDayTab(days: List<DailyHealth>, fmt: Formatters) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (day == null) {
+        if (selectedDate == null) {
             Text(
                 "No daily health yet. Refresh activities to pull the last two weeks, or load older days above.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -161,32 +223,78 @@ private fun HealthDayTab(days: List<DailyHealth>, fmt: Formatters) {
         } else {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(
-                    onClick = { selectedDate = days[index + 1].date },
-                    enabled = canGoOlder,
+                    onClick = { older?.date?.let(onHealthDate) },
+                    enabled = older != null,
                 ) {
                     Icon(Icons.Outlined.ChevronLeft, contentDescription = "Previous day")
                 }
-                Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable(enabled = availableDates.isNotEmpty()) { showPicker = true },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            formatHealthDate(selectedDate),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                        )
+                        Icon(
+                            Icons.Outlined.CalendarMonth,
+                            contentDescription = "Pick date",
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
-                        formatHealthDate(day.date),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                    )
-                    Text(
-                        "${index + 1} of ${days.size}",
+                        if (days.isEmpty()) "No stored days yet" else {
+                            val pos = days.indexOfFirst { it.date == selectedDate }
+                            if (pos >= 0) "${pos + 1} of ${days.size}" else "Not in stored days"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 IconButton(
-                    onClick = { selectedDate = days[index - 1].date },
-                    enabled = canGoNewer,
+                    onClick = { newer?.date?.let(onHealthDate) },
+                    enabled = newer != null,
                 ) {
                     Icon(Icons.Outlined.ChevronRight, contentDescription = "Next day")
                 }
             }
-            DayHealthCard(day, fmt)
+            if (showPicker && availableDates.isNotEmpty()) {
+                HealthDatePickerDialog(
+                    selected = if (selectedDate in availableDates) selectedDate else availableDates.first(),
+                    available = availableDates,
+                    onPick = { iso ->
+                        onHealthDate(iso)
+                        showPicker = false
+                    },
+                    onDismiss = { showPicker = false },
+                )
+            }
+            if (day != null) {
+                DayHealthCard(day, fmt)
+            } else {
+                Text(
+                    if (summaryLoading) "Loading daily totals…"
+                    else "No daily totals for this day.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (daySamples.isEmpty() && seriesLoading && samplesDate == selectedDate) {
+                Text(
+                    "Loading graphs for this day…",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (day != null) {
+                DaySeriesCharts(day, daySamples, fmt)
+            } else if (daySamples.isNotEmpty()) {
+                DaySeriesCharts(DailyHealth(date = selectedDate), daySamples, fmt)
+            }
         }
     }
 }
@@ -194,13 +302,19 @@ private fun HealthDayTab(days: List<DailyHealth>, fmt: Formatters) {
 @Composable
 private fun HealthStatsTab(days: List<DailyHealth>, fmt: Formatters) {
     var range by remember { mutableStateOf(HealthRange.MONTH) }
-    var metric by remember { mutableStateOf(HealthMetric.STEPS) }
     val window = remember(days, range) { days.inRange(range) }
-    val points = remember(window, metric, fmt.metric, range) {
-        healthTrend(window, metric, fmt, range)
+    val trends = remember(window, fmt.metric, range) {
+        HealthStatsOrder.associateWith { metric -> healthTrend(window, metric, fmt, range) }
     }
-    val latest = points.lastOrNull()?.value
-    val average = points.takeIf { it.isNotEmpty() }?.map { it.value }?.average()
+    val restHr = remember(window, range) { healthTrend(window, range) { it.restingHr } }
+    val minHr = remember(window, range) { healthTrend(window, range) { it.minHr } }
+    val maxHr = remember(window, range) { healthTrend(window, range) { it.maxHr } }
+    val hasHeartRate = restHr.isNotEmpty() || minHr.isNotEmpty() || maxHr.isNotEmpty()
+    val unit = when (range) {
+        HealthRange.YEAR -> "week"
+        HealthRange.ALL -> "month"
+        else -> "day"
+    }
 
     Column(
         Modifier
@@ -221,35 +335,96 @@ private fun HealthStatsTab(days: List<DailyHealth>, fmt: Formatters) {
                 )
             }
         }
-        Row(
-            Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            HealthMetric.entries.forEach { item ->
-                FilterChip(
-                    selected = metric == item,
-                    onClick = { metric = item },
-                    label = { Text(item.label) },
-                )
-            }
+        if (HealthStatsOrder.filter { it != HealthMetric.HEART_RATE }.all { trends[it].isNullOrEmpty() } && !hasHeartRate) {
+            Text(
+                "No health in this range. Load older days if needed.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        ChartCard(
-            title = metric.label,
-            headline = latest?.let { metric.format(it, fmt) },
-            subtitle = when {
-                points.isEmpty() -> "No ${metric.label.lowercase()} in this range. Load older days if needed."
-                else -> buildString {
-                    val unit = when (range) {
-                        HealthRange.YEAR -> if (points.size == 1) "week" else "weeks"
-                        HealthRange.ALL -> if (points.size == 1) "month" else "months"
-                        else -> if (points.size == 1) "day" else "days"
+        HealthStatsOrder.forEach { metric ->
+            if (metric == HealthMetric.HEART_RATE) {
+                if (!hasHeartRate) return@forEach
+                val hrLine = maxHr.ifEmpty { minHr }.ifEmpty { restHr }
+                val restLine = restHr.takeIf { hrLine !== restHr && it.isNotEmpty() }.orEmpty()
+                ChartCard(
+                    title = "Heart rate",
+                    subtitle = buildString {
+                        val n = maxOf(hrLine.size, restHr.size)
+                        append("$n ${if (n == 1) unit else unit + "s"}")
+                        restHr.takeIf { it.isNotEmpty() }?.let {
+                            append(" · avg rest ${fmt.heartRate(it.map { p -> p.value }.average())}")
+                        }
+                    },
+                ) {
+                    LineChart(
+                        points = hrLine,
+                        lineColor = Color(0xFFE24B4B),
+                        extra = if (restLine.isNotEmpty()) {
+                            listOf(ChartLine(restLine, Color(0xFF24357A), dashed = true))
+                        } else {
+                            emptyList()
+                        },
+                        band = if (minHr.isNotEmpty() && maxHr.isNotEmpty()) minHr to maxHr else null,
+                        yFormatter = { String.format(Locale.US, "%.0f", it) },
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "HR range",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFE24B4B),
+                        )
+                        if (restLine.isNotEmpty()) {
+                            Text(
+                                "Dashed: resting",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF24357A),
+                            )
+                        }
                     }
-                    append("${points.size} $unit")
-                    average?.let { append(" · avg ${metric.format(it, fmt)}") }
                 }
-            },
-        ) {
-            LineChart(points, yFormatter = { metric.tick(it, fmt) })
+                return@forEach
+            }
+            val points = trends[metric].orEmpty()
+            if (points.isEmpty()) return@forEach
+            val average = points.map { it.value }.average()
+            val goal = when (metric) {
+                HealthMetric.STEPS -> window.latestPositive { it.stepGoal } ?: days.latestPositive { it.stepGoal }
+                HealthMetric.FLOORS -> window.latestPositive { it.floorsGoal } ?: days.latestPositive { it.floorsGoal }
+                else -> null
+            }
+            ChartCard(
+                title = metric.label,
+                subtitle = buildString {
+                    append("${points.size} ${if (points.size == 1) unit else unit + "s"} · avg ${metric.format(average, fmt)}")
+                    if (goal != null) append(" · goal ${metric.format(goal, fmt)}")
+                },
+            ) {
+                when (metric.style) {
+                    HealthChartStyle.BARS -> BarChart(
+                        points,
+                        barColor = metric.color,
+                        referenceY = goal,
+                        yFormatter = { metric.tick(it, fmt) },
+                    )
+                    HealthChartStyle.LINE -> LineChart(
+                        points,
+                        lineColor = metric.color,
+                        yMin = metric.yMin,
+                        yMax = metric.yMax,
+                        yFormatter = { metric.tick(it, fmt) },
+                    )
+                }
+                if (goal != null) {
+                    Text(
+                        "Dashed line is the daily goal",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 }
@@ -282,6 +457,9 @@ private fun DayHealthCard(day: DailyHealth, fmt: Formatters) {
     }
 }
 
+private fun List<DailyHealth>.latestPositive(pick: (DailyHealth) -> Double?): Double? =
+    sortedBy { it.date }.mapNotNull(pick).lastOrNull()?.takeIf { it > 0 }
+
 private fun List<DailyHealth>.inRange(range: HealthRange): List<DailyHealth> {
     val end = mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.maxOrNull()
         ?: return this
@@ -297,9 +475,15 @@ private fun healthTrend(
     metric: HealthMetric,
     fmt: Formatters,
     range: HealthRange,
+): List<TrendPoint> = healthTrend(days, range) { metric.value(it, fmt) }
+
+private fun healthTrend(
+    days: List<DailyHealth>,
+    range: HealthRange,
+    valueOf: (DailyHealth) -> Double?,
 ): List<TrendPoint> {
     val daily = days.asReversed().mapNotNull { day ->
-        val value = metric.value(day, fmt) ?: return@mapNotNull null
+        val value = valueOf(day) ?: return@mapNotNull null
         val date = runCatching { LocalDate.parse(day.date) }.getOrNull() ?: return@mapNotNull null
         TrendPoint(
             millis = date.toEpochDay() * 86_400_000L,
@@ -357,7 +541,7 @@ private fun HealthMetric.value(day: DailyHealth, fmt: Formatters): Double? = whe
     HealthMetric.CALORIES -> day.caloriesTotal ?: day.caloriesActive
     HealthMetric.SLEEP -> day.sleepSeconds?.div(3600.0)
     HealthMetric.SLEEP_SCORE -> day.sleepScore
-    HealthMetric.RHR -> day.restingHr
+    HealthMetric.HEART_RATE -> day.restingHr
     HealthMetric.STRESS -> day.stressAvg
     HealthMetric.BODY_BATTERY -> day.bodyBatteryLatest
     HealthMetric.INTENSITY -> listOfNotNull(day.intensityModerate, day.intensityVigorous)
@@ -374,7 +558,7 @@ private fun HealthMetric.format(value: Double, fmt: Formatters): String = when (
     HealthMetric.DISTANCE -> "${String.format(Locale.US, "%.1f", value)} ${fmt.distanceUnit()}"
     HealthMetric.CALORIES -> fmt.calories(value)
     HealthMetric.SLEEP -> fmt.duration(value * 3600.0)
-    HealthMetric.RHR -> fmt.heartRate(value)
+    HealthMetric.HEART_RATE -> fmt.heartRate(value)
     HealthMetric.SPO2 -> "${value.roundToInt()}%"
     HealthMetric.RESPIRATION -> fmt.respiration(value)
 }
@@ -413,7 +597,10 @@ private fun DailyHealth.metricRows(fmt: Formatters): List<Pair<String, String>> 
     stressMax?.let { add("Stress max" to it.roundToInt().toString()) }
     bodyBatteryHigh?.let { add("BB high" to it.roundToInt().toString()) }
     bodyBatteryLow?.let { add("BB low" to it.roundToInt().toString()) }
-    floorsUp?.let { add("Floors up" to it.roundToInt().toString()) }
+    floorsUp?.let {
+        val goal = floorsGoal?.roundToInt()?.takeIf { g -> g > 0 }
+        add("Floors up" to if (goal != null) "${it.roundToInt()} / $goal" else it.roundToInt().toString())
+    }
     spo2Avg?.let { add("SpO2" to "${it.roundToInt()}%") }
     respirationAvg?.let { add("Breathing" to fmt.respiration(it)) }
 }
@@ -428,3 +615,53 @@ private val healthDateFmt: DateTimeFormatter =
 
 private fun formatHealthDate(iso: String): String =
     runCatching { LocalDate.parse(iso).format(healthDateFmt) }.getOrDefault(iso)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HealthDatePickerDialog(
+    selected: String,
+    available: Set<String>,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val years = remember(available) {
+        available.mapNotNull { runCatching { LocalDate.parse(it).year }.getOrNull() }
+    }
+    val yearRange = if (years.isEmpty()) 2000..2100 else years.min()..years.max()
+    val selectable = remember(available) {
+        object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+                utcMillisToIso(utcTimeMillis) in available
+
+            override fun isSelectableYear(year: Int): Boolean = year in yearRange
+        }
+    }
+    val state = rememberDatePickerState(
+        initialSelectedDateMillis = isoToUtcMillis(selected),
+        yearRange = yearRange,
+        selectableDates = selectable,
+    )
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val iso = state.selectedDateMillis?.let(::utcMillisToIso)
+                    if (iso != null && iso in available) onPick(iso) else onDismiss()
+                },
+            ) { Text("OK") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    ) {
+        DatePicker(state = state)
+    }
+}
+
+private fun isoToUtcMillis(iso: String): Long =
+    LocalDate.parse(iso).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+private fun utcMillisToIso(millis: Long): String =
+    Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toString()
+

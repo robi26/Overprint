@@ -38,6 +38,7 @@ data class DailyHealthEntity(
     val bodyBatteryLatest: Double?,
     val floorsUp: Double?,
     val floorsDown: Double?,
+    val floorsGoal: Double?,
     val spo2Avg: Double?,
     val spo2Min: Double?,
     val respirationAvg: Double?,
@@ -66,7 +67,7 @@ internal fun DailyHealthEntity.toModel() = DailyHealth(
     restingHr, minHr, maxHr, sleepSeconds, sleepScore, sleepDeepSeconds, sleepLightSeconds,
     sleepRemSeconds, sleepAwakeSeconds, intensityModerate, intensityVigorous, stressAvg, stressMax,
     bodyBatteryCharged, bodyBatteryDrained, bodyBatteryHigh, bodyBatteryLow, bodyBatteryLatest,
-    floorsUp, floorsDown, spo2Avg, spo2Min, respirationAvg, respirationMin, respirationMax,
+    floorsUp, floorsDown, floorsGoal, spo2Avg, spo2Min, respirationAvg, respirationMin, respirationMax,
     updatedAtMillis,
 )
 
@@ -75,6 +76,6 @@ internal fun DailyHealth.toEntity() = DailyHealthEntity(
     restingHr, minHr, maxHr, sleepSeconds, sleepScore, sleepDeepSeconds, sleepLightSeconds,
     sleepRemSeconds, sleepAwakeSeconds, intensityModerate, intensityVigorous, stressAvg, stressMax,
     bodyBatteryCharged, bodyBatteryDrained, bodyBatteryHigh, bodyBatteryLow, bodyBatteryLatest,
-    floorsUp, floorsDown, spo2Avg, spo2Min, respirationAvg, respirationMin, respirationMax,
+    floorsUp, floorsDown, floorsGoal, spo2Avg, spo2Min, respirationAvg, respirationMin, respirationMax,
     updatedAtMillis,
 )

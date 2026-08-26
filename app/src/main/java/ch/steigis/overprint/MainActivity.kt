@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -26,6 +27,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -60,6 +62,10 @@ import ch.steigis.overprint.ui.theme.OverprintTheme
 import ch.steigis.overprint.ui.theme.DarkWindowArgb
 import ch.steigis.overprint.ui.theme.LightWindowArgb
 import ch.steigis.overprint.ui.theme.resolvedDarkTheme
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private val viewModel: AppViewModel by viewModels { AppViewModel.factory() }
@@ -102,7 +108,7 @@ private fun OverprintNav(
     val titles = mapOf(
         "activities" to "Activities",
         "calendar" to "Calendar",
-        "stats" to "Statistics",
+        "stats" to "Activity statistics",
         "more" to "More",
         "health" to "Health",
         "heatmap" to "Heatmap",
@@ -117,7 +123,21 @@ private fun OverprintNav(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(titles[route] ?: "Overprint") },
+                title = {
+                    if (route == "health") {
+                        val oldest = state.dailyHealth.minOfOrNull { it.date }
+                        Column {
+                            Text("Health")
+                            Text(
+                                if (oldest != null) "Since ${formatHealthSince(oldest)}" else "Not synced yet",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        Text(titles[route] ?: "Overprint")
+                    }
+                },
                 navigationIcon = {
                     if (showBack) {
                         IconButton(onClick = {
@@ -138,6 +158,18 @@ private fun OverprintNav(
                                 CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             } else {
                                 Icon(Icons.Outlined.Refresh, contentDescription = "Refresh from Garmin")
+                            }
+                        }
+                    }
+                    if (route == "health") {
+                        TextButton(
+                            onClick = viewModel::loadHealthHistory,
+                            enabled = state.settings.hasGarminCredentials && !state.garminSync.running,
+                        ) {
+                            if (state.garminSync.running) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text("Load 90 days")
                             }
                         }
                     }
@@ -223,16 +255,25 @@ private fun OverprintNav(
             composable("calendar") {
                 CalendarScreen(
                     activities = state.activities,
+                    dailyHealth = state.dailyHealth,
                     year = state.calYear,
                     month = state.calMonth,
                     selectedDay = state.calDay,
                     fmt = state.fmt,
+                    healthLoading = state.healthSummaryLoading,
+                    healthLoadingDate = state.healthSummaryDate,
+                    syncRunning = state.garminSync.running,
                     onMonthChange = viewModel::setMonth,
                     onSelectDay = viewModel::setDay,
                     onOpen = {
                         viewModel.open(it)
                         nav.navigate("detail")
                     },
+                    onOpenHealth = { iso ->
+                        viewModel.setHealthDate(iso)
+                        nav.navigate("health")
+                    },
+                    onEnsureHealth = viewModel::ensureDailyHealth,
                 )
             }
             composable("stats") {
@@ -248,10 +289,15 @@ private fun OverprintNav(
             composable("health") {
                 HealthScreen(
                     days = state.dailyHealth,
+                    samples = state.healthSamples,
+                    samplesDate = state.healthSamplesDate,
+                    seriesLoading = state.healthSeriesLoading,
+                    summaryLoading = state.healthSummaryLoading,
+                    healthDate = state.healthDate,
                     garminSync = state.garminSync,
                     fmt = state.fmt,
-                    hasGarminCredentials = state.settings.hasGarminCredentials,
-                    onLoadOlder = viewModel::loadHealthHistory,
+                    onLoadSamples = viewModel::loadHealthSamples,
+                    onHealthDate = viewModel::setHealthDate,
                 )
             }
             composable("heatmap") {
@@ -291,6 +337,12 @@ private fun OverprintNav(
         }
     }
 }
+
+private val healthSinceFmt: DateTimeFormatter =
+    DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(Locale.getDefault())
+
+private fun formatHealthSince(iso: String): String =
+    runCatching { LocalDate.parse(iso).format(healthSinceFmt) }.getOrDefault(iso)
 
 @Composable
 private fun KeepAwakeWhileSyncing(enabled: Boolean) {
