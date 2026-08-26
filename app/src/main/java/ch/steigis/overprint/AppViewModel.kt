@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ch.steigis.overprint.data.prefs.AppSettings
 import ch.steigis.overprint.data.prefs.SettingsStore
@@ -19,7 +21,11 @@ import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
+import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthSample
+import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.GpsTrack
+import java.time.LocalDate
 import java.util.Calendar
 
 data class UiState(
@@ -40,6 +46,13 @@ data class UiState(
     val gpsTracks: List<GpsTrack> = emptyList(),
     val gpsTracksLoading: Boolean = false,
     val deletedActivities: List<Activity> = emptyList(),
+    val dailyHealth: List<DailyHealth> = emptyList(),
+    val healthSamples: List<HealthSample> = emptyList(),
+    val healthSamplesDate: String? = null,
+    val healthSeriesLoading: Boolean = false,
+    val healthSummaryLoading: Boolean = false,
+    val healthSummaryDate: String? = null,
+    val healthDate: String? = null,
 )
 
 class AppViewModel(
@@ -51,6 +64,11 @@ class AppViewModel(
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
     private var gpsLoadJob: Job? = null
+    private var healthSampleJob: Job? = null
+    private var healthSummaryJob: Job? = null
+    private val seriesFetchedDates = mutableSetOf<String>()
+    private val summaryFetchedDates = mutableSetOf<String>()
+    private val healthSummaryMutex = Mutex()
 
     init {
         viewModelScope.launch {
@@ -69,6 +87,11 @@ class AppViewModel(
         viewModelScope.launch {
             settingsStore.settings.collect { s ->
                 _state.update { it.copy(settings = s, fmt = Formatters(s.metric)) }
+            }
+        }
+        viewModelScope.launch {
+            repo.dailyHealth.collect { days ->
+                _state.update { it.copy(dailyHealth = days) }
             }
         }
     }
@@ -91,6 +114,24 @@ class AppViewModel(
 
     fun setDay(day: Int) {
         _state.update { it.copy(calDay = day) }
+    }
+
+    fun setHealthDate(date: String?) {
+        _state.update { it.copy(healthDate = date) }
+    }
+
+    fun ensureDailyHealth(date: String?) {
+        if (date.isNullOrBlank()) {
+            _state.update { it.copy(healthSummaryLoading = false, healthSummaryDate = null) }
+            return
+        }
+        if (_state.value.dailyHealth.any { it.date == date }) {
+            _state.update { it.copy(healthSummaryLoading = false, healthSummaryDate = date) }
+            return
+        }
+        if (healthSummaryJob?.isActive == true && _state.value.healthSummaryDate == date) return
+        healthSummaryJob?.cancel()
+        healthSummaryJob = viewModelScope.launch { fetchDailyHealthIfMissing(date) }
     }
 
     fun open(activity: Activity) {
@@ -141,6 +182,95 @@ class AppViewModel(
         viewModelScope.launch { runGarminSync() }
     }
 
+    fun loadHealthHistory() {
+        viewModelScope.launch { runHealthHistorySync() }
+    }
+
+    fun loadHealthSamples(date: String?) {
+        healthSampleJob?.cancel()
+        if (date.isNullOrBlank()) {
+            _state.update {
+                it.copy(healthSamples = emptyList(), healthSamplesDate = null, healthSeriesLoading = false)
+            }
+            return
+        }
+        healthSampleJob = viewModelScope.launch {
+            fetchDailyHealthIfMissing(date)
+            val samples = withContext(Dispatchers.IO) { repo.healthSamples(date) }
+            _state.update { it.copy(healthSamples = samples, healthSamplesDate = date, healthSeriesLoading = false) }
+            val canFetch = (samples.isEmpty() || samples.none { it.metric == HealthSeries.FLOORS }) &&
+                date !in seriesFetchedDates &&
+                _state.value.settings.hasGarminCredentials &&
+                !_state.value.garminSync.running
+            if (!canFetch) return@launch
+            seriesFetchedDates += date
+            _state.update { it.copy(healthSeriesLoading = true) }
+            try {
+                withContext(Dispatchers.IO) { repo.syncHealthSeriesForDate(date) }
+                val fetched = withContext(Dispatchers.IO) { repo.healthSamples(date) }
+                _state.update { st ->
+                    if (st.healthSamplesDate == date) {
+                        st.copy(healthSamples = fetched, healthSeriesLoading = false)
+                    } else {
+                        st.copy(healthSeriesLoading = false)
+                    }
+                }
+            } catch (e: CancellationException) {
+                seriesFetchedDates.remove(date)
+                throw e
+            } catch (_: Exception) {
+                _state.update { it.copy(healthSeriesLoading = false) }
+            }
+        }
+    }
+
+    private suspend fun fetchDailyHealthIfMissing(date: String) {
+        healthSummaryMutex.withLock {
+            if (_state.value.dailyHealth.any { it.date == date }) {
+                _state.update { it.copy(healthSummaryLoading = false, healthSummaryDate = date) }
+                return
+            }
+            val parsed = runCatching { LocalDate.parse(date) }.getOrNull()
+            val cannotDownload = parsed == null ||
+                parsed.isAfter(LocalDate.now()) ||
+                !_state.value.settings.hasGarminCredentials
+            if (cannotDownload || date in summaryFetchedDates) {
+                _state.update { it.copy(healthSummaryLoading = false, healthSummaryDate = date) }
+                return
+            }
+            if (_state.value.garminSync.running) {
+                _state.update { it.copy(healthSummaryLoading = true, healthSummaryDate = date) }
+                return
+            }
+            _state.update { it.copy(healthSummaryLoading = true, healthSummaryDate = date) }
+            try {
+                val stored = withContext(Dispatchers.IO) { repo.syncDailyHealthForDate(date) }
+                summaryFetchedDates += date
+                if (stored == null) {
+                    _state.update { st ->
+                        if (st.healthSummaryDate == date) st.copy(healthSummaryLoading = false) else st
+                    }
+                } else {
+                    _state.update { st ->
+                        val days = if (st.dailyHealth.any { it.date == stored.date }) st.dailyHealth
+                        else (st.dailyHealth + stored).sortedByDescending { it.date }
+                        if (st.healthSummaryDate == date) {
+                            st.copy(dailyHealth = days, healthSummaryLoading = false)
+                        } else {
+                            st.copy(dailyHealth = days)
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                _state.update { st ->
+                    if (st.healthSummaryDate == date) st.copy(healthSummaryLoading = false) else st
+                }
+            }
+        }
+    }
+
     private suspend fun runGarminSync() {
         if (_state.value.garminSync.running) return
         val settings = _state.value.settings
@@ -180,6 +310,47 @@ class AppViewModel(
         } finally {
             syncWakeLock.release()
             _state.update { it.copy(refreshing = false, garminSync = it.garminSync.copy(running = false)) }
+        }
+    }
+
+    private suspend fun runHealthHistorySync() {
+        if (_state.value.garminSync.running) return
+        val settings = _state.value.settings
+        if (!settings.hasGarminCredentials) {
+            _state.update {
+                it.copy(
+                    garminSync = GarminSyncProgress(
+                        error = "Enter your Garmin email and password in Settings.",
+                    ),
+                    status = "Enter your Garmin email and password in Settings.",
+                )
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                status = null,
+                garminSync = GarminSyncProgress(running = true, message = "Loading older health…"),
+            )
+        }
+        syncWakeLock.acquire()
+        try {
+            runCatching {
+                repo.syncHealthHistory { update ->
+                    _state.update { it.copy(garminSync = update, status = update.message) }
+                }
+            }.onFailure { err ->
+                val message = err.message ?: "Health history failed"
+                _state.update {
+                    it.copy(
+                        garminSync = it.garminSync.copy(running = false, error = message),
+                        status = message,
+                    )
+                }
+            }
+        } finally {
+            syncWakeLock.release()
+            _state.update { it.copy(garminSync = it.garminSync.copy(running = false)) }
         }
     }
 

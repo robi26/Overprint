@@ -7,16 +7,24 @@ import ch.steigis.overprint.data.local.ActivityEntity
 import ch.steigis.overprint.data.local.AppDatabase
 import ch.steigis.overprint.data.local.LapEntity
 import ch.steigis.overprint.data.local.TrackPointEntity
+import ch.steigis.overprint.data.local.toEntity
+import ch.steigis.overprint.data.local.toModel
 import ch.steigis.overprint.data.parse.ActivityFileParser
 import ch.steigis.overprint.data.prefs.AppSettings
 import ch.steigis.overprint.data.prefs.SettingsStore
+import ch.steigis.overprint.data.remote.garmin.GarminApiException
 import ch.steigis.overprint.data.remote.garmin.GarminClient
 import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.data.remote.garmin.garminReachedKnownHistory
+import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
+import ch.steigis.overprint.data.remote.garmin.healthRecentRange
+import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
+import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.DataSource
+import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.GeoPoint
 import ch.steigis.overprint.domain.model.GpsTrack
 import ch.steigis.overprint.domain.model.Lap
@@ -27,6 +35,7 @@ import ch.steigis.overprint.domain.stats.sanitizeLap
 import ch.steigis.overprint.domain.stats.withDerivedTrackStats
 import ch.steigis.overprint.domain.stats.withListExtras
 import ch.steigis.overprint.domain.stats.withNormalizedElapsed
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.min
 
 class ActivityRepository(
@@ -39,6 +48,40 @@ class ActivityRepository(
 
     val deletedActivities: Flow<List<Activity>> = db.activities().observeDeleted().map { list ->
         list.map { it.toModel() }
+    }
+
+    val dailyHealth: Flow<List<DailyHealth>> = db.health().observeAll().map { list ->
+        list.map { it.toModel() }
+    }
+
+    suspend fun healthSamples(date: String): List<HealthSample> =
+        db.healthSamples().forDate(date).map { it.toModel() }
+
+    suspend fun syncHealthSeriesForDate(date: String): Int {
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) return 0
+        val day = java.time.LocalDate.parse(date)
+        val client = GarminClient()
+        authenticate(client, prefs) {}
+        val series = client.pullHealthSeries(day, day)
+        storeHealthSeries(series, overwrite = true)
+        return series.size
+    }
+
+    suspend fun syncDailyHealthForDate(date: String): DailyHealth? {
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) return null
+        val day = java.time.LocalDate.parse(date)
+        val client = GarminClient()
+        authenticate(client, prefs) {}
+        val days = client.pullHealth(day, day, includeDailySummaries = true)
+        val now = System.currentTimeMillis()
+        days.forEach { incoming ->
+            val existing = db.health().byDate(incoming.date)?.toModel()
+            val merged = if (existing == null) incoming else mergeDailyHealth(existing, incoming, overwrite = true)
+            db.health().upsert(merged.copy(updatedAtMillis = now).toEntity())
+        }
+        return db.health().byDate(date)?.toModel()
     }
 
     suspend fun get(id: String): ActivityDetail? {
@@ -166,15 +209,83 @@ class ActivityRepository(
                 if (warnings.isNotEmpty()) append(" (${warnings.size} without FIT track)")
             }
         }
+        runCatching {
+            progress(GarminSyncProgress(running = true, message = "Updating recent health…"))
+            val (start, end) = healthRecentRange()
+            pullAndStoreHealth(client, start, end, overwrite = true) { message ->
+                progress(GarminSyncProgress(running = true, message = message, warnings = warnings.toList()))
+            }
+        }.onFailure { err ->
+            warnings += "Health: ${err.message ?: err.javaClass.simpleName}"
+        }
         progress(
             GarminSyncProgress(
                 running = false,
-                message = summaryText,
+                message = if (warnings.any { it.startsWith("Health:") }) "$summaryText (${warnings.last()})" else summaryText,
                 current = imported,
                 total = imported,
                 warnings = warnings,
             ),
         )
+    }
+
+    /** Older months/years. Call from Health, not from the automatic activity sync. */
+    suspend fun syncHealthHistory(progress: (GarminSyncProgress) -> Unit = {}) {
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) {
+            error("Enter your Garmin Connect email and password in Settings")
+        }
+        val client = GarminClient()
+        authenticate(client, prefs, progress)
+        val (start, end) = healthHistoryRange(db.health().oldestDate())
+        if (end.isBefore(start)) {
+            progress(GarminSyncProgress(running = false, message = "No older health window to load"))
+            return
+        }
+        progress(GarminSyncProgress(running = true, message = "Loading health $start – $end"))
+        val stored = pullAndStoreHealth(client, start, end, overwrite = false) { message ->
+            progress(GarminSyncProgress(running = true, message = message))
+        }
+        progress(
+            GarminSyncProgress(
+                running = false,
+                message = "Stored $stored health ${if (stored == 1) "day" else "days"} ($start – $end)",
+                current = stored,
+                total = stored,
+            ),
+        )
+    }
+
+    private suspend fun pullAndStoreHealth(
+        client: GarminClient,
+        start: java.time.LocalDate,
+        end: java.time.LocalDate,
+        overwrite: Boolean,
+        onProgress: (String) -> Unit,
+    ): Int {
+        val days = client.pullHealth(start, end, includeDailySummaries = true, onProgress = onProgress)
+        val now = System.currentTimeMillis()
+        days.forEach { incoming ->
+            val existing = db.health().byDate(incoming.date)?.toModel()
+            val merged = if (existing == null) incoming else mergeDailyHealth(existing, incoming, overwrite)
+            db.health().upsert(merged.copy(updatedAtMillis = now).toEntity())
+        }
+        runCatching {
+            val series = client.pullHealthSeries(start, end, onProgress)
+            storeHealthSeries(series, overwrite)
+        }.onFailure { err ->
+            if (err is CancellationException) throw err
+            if (err is GarminApiException && (err.isAuthFailure || err.httpCode == 429)) throw err
+        }
+        return days.size
+    }
+
+    private suspend fun storeHealthSeries(samples: List<HealthSample>, overwrite: Boolean) {
+        samples.groupBy { it.date to it.metric }.forEach { (key, points) ->
+            val (date, metric) = key
+            if (!overwrite && db.healthSamples().countFor(date, metric.name) > 0) return@forEach
+            db.healthSamples().replaceMetric(date, metric.name, points.map { it.toEntity() })
+        }
     }
 
     /**

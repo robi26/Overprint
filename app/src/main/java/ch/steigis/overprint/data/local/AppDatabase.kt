@@ -201,14 +201,16 @@ interface LapDao {
 }
 
 @Database(
-    entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class],
-    version = 3,
+    entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class, DailyHealthEntity::class, HealthSampleEntity::class],
+    version = 6,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun activities(): ActivityDao
     abstract fun tracks(): TrackDao
     abstract fun laps(): LapDao
+    abstract fun health(): DailyHealthDao
+    abstract fun healthSamples(): HealthSampleDao
 
     @Transaction
     suspend fun replaceDetail(activity: ActivityEntity, track: List<TrackPointEntity>, laps: List<LapEntity>) {
@@ -223,6 +225,48 @@ abstract class AppDatabase : RoomDatabase() {
 val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE activities ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS daily_health (
+                date TEXT NOT NULL PRIMARY KEY,
+                steps REAL, stepGoal REAL, distanceMeters REAL,
+                caloriesTotal REAL, caloriesActive REAL, caloriesBmr REAL,
+                restingHr REAL, minHr REAL, maxHr REAL,
+                sleepSeconds REAL, sleepScore REAL, sleepDeepSeconds REAL,
+                sleepLightSeconds REAL, sleepRemSeconds REAL, sleepAwakeSeconds REAL,
+                intensityModerate REAL, intensityVigorous REAL,
+                stressAvg REAL, stressMax REAL,
+                bodyBatteryCharged REAL, bodyBatteryDrained REAL,
+                bodyBatteryHigh REAL, bodyBatteryLow REAL, bodyBatteryLatest REAL,
+                floorsUp REAL, floorsDown REAL,
+                spo2Avg REAL, spo2Min REAL,
+                respirationAvg REAL, respirationMin REAL, respirationMax REAL,
+                updatedAtMillis INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+    }
+}
+
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS health_samples (
+                rowId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                date TEXT NOT NULL,
+                metric TEXT NOT NULL,
+                timestampMillis INTEGER NOT NULL,
+                value REAL NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_health_samples_date_metric ON health_samples(date, metric)")
     }
 }
 
@@ -243,5 +287,11 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
         ).forEach { column ->
             db.execSQL("ALTER TABLE track_points ADD COLUMN $column REAL")
         }
+    }
+}
+
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE daily_health ADD COLUMN floorsGoal REAL")
     }
 }

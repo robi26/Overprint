@@ -7,6 +7,7 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -33,10 +34,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -45,7 +49,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -71,6 +74,9 @@ import ch.steigis.overprint.ui.heatmap.geoToScreen
 import ch.steigis.overprint.ui.heatmap.pan
 import ch.steigis.overprint.ui.heatmap.zoomBy
 import ch.steigis.overprint.ui.theme.toComposeColor
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -78,6 +84,7 @@ import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.pow
+import kotlin.math.roundToInt
 
 fun metricColor(t: Float): Color {
     val clamped = t.coerceIn(0f, 1f)
@@ -513,15 +520,18 @@ fun BarChart(
     points: List<TrendPoint>,
     modifier: Modifier = Modifier,
     barColor: Color? = null,
+    referenceY: Double? = null,
+    referenceColor: Color = Color(0xFF24357A),
     yFormatter: (Double) -> String = { String.format(Locale.US, "%.0f", it) },
 ) {
     val colors = MaterialTheme.colorScheme
     val fill = barColor ?: colors.primary
     val grid = colors.outline.copy(alpha = 0.45f)
-    val labelColor = colors.onSurfaceVariant
-    val maxV = remember(points) { niceMax(points.maxOfOrNull { it.value } ?: 1.0) }
+    val dataMax = points.maxOfOrNull { it.value } ?: 1.0
+    val maxV = remember(points, referenceY) {
+        niceMax(max(dataMax, referenceY ?: 0.0).coerceAtLeast(1.0))
+    }
     val ticks = remember(maxV) { (0..4).map { maxV * it / 4.0 } }
-    val xStep = max(1, (points.size - 1) / 5)
 
     Column(modifier.fillMaxWidth()) {
         if (points.isEmpty()) {
@@ -543,25 +553,385 @@ fun BarChart(
                     val h = (p.value / maxV * size.height).toFloat()
                     if (h <= 0f) return@forEachIndexed
                     val left = i * slot + (slot - barW) / 2f
-                    drawTopRoundedBar(fill, left, size.height - h.coerceAtLeast(2f), barW, h.coerceAtLeast(2f), radius)
+                    val color = if (referenceY != null && referenceY > 0 && p.value >= referenceY) {
+                        Color(0xFF2BB673)
+                    } else {
+                        fill
+                    }
+                    drawTopRoundedBar(color, left, size.height - h.coerceAtLeast(2f), barW, h.coerceAtLeast(2f), radius)
+                }
+                referenceY?.let { goal ->
+                    if (goal <= 0.0) return@let
+                    val y = size.height * (1f - (goal / maxV).toFloat())
+                    drawLine(
+                        referenceColor,
+                        Offset(0f, y),
+                        Offset(size.width, y),
+                        2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12.dp.toPx(), 8.dp.toPx())),
+                    )
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 40.dp, top = 8.dp)) {
-            points.forEachIndexed { i, p ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    if (i % xStep == 0 || i == points.lastIndex) {
-                        Text(
-                            p.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = labelColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                            textAlign = TextAlign.Center,
+        ChartXLabels(points.map { it.label }, centered = true)
+    }
+}
+
+data class ChartLine(
+    val points: List<TrendPoint>,
+    val color: Color,
+    val dashed: Boolean = false,
+)
+
+@Composable
+fun LineChart(
+    points: List<TrendPoint>,
+    modifier: Modifier = Modifier,
+    lineColor: Color? = null,
+    extra: List<ChartLine> = emptyList(),
+    band: Pair<List<TrendPoint>, List<TrendPoint>>? = null,
+    yMin: Double? = null,
+    yMax: Double? = null,
+    yFormatter: (Double) -> String = { String.format(Locale.US, "%.0f", it) },
+) {
+    val colors = MaterialTheme.colorScheme
+    val stroke = lineColor ?: colors.primary
+    val grid = colors.outline.copy(alpha = 0.45f)
+    val lines = listOf(ChartLine(points, stroke)) + extra
+    val allPoints = remember(points, extra, band) {
+        lines.flatMap { it.points } + (band?.first.orEmpty()) + (band?.second.orEmpty())
+    }
+    val times = remember(allPoints) { allPoints.map { it.millis }.distinct().sorted() }
+    val values = remember(allPoints) { allPoints.map { it.value } }
+    val rawMin = yMin ?: values.minOrNull() ?: 0.0
+    val rawMax = yMax ?: values.maxOrNull() ?: 1.0
+    val ticks = remember(rawMin, rawMax, yMin, yMax) {
+        if (yMin != null && yMax != null) {
+            (0..4).map { yMin + (yMax - yMin) * it / 4.0 }
+        } else {
+            val pad = ((rawMax - rawMin) * 0.12).coerceAtLeast(if (rawMax == rawMin) 1.0 else 0.0)
+            axisTicks((rawMin - pad).coerceAtLeast(0.0), rawMax + pad, 4, clampZero = rawMin >= 0)
+        }
+    }
+    val minV = ticks.first()
+    val maxV = ticks.last().coerceAtLeast(minV + 1e-6)
+    val labels = remember(times, allPoints) {
+        val byTime = allPoints.associate { it.millis to it.label }
+        times.map { byTime[it].orEmpty() }
+    }
+
+    Column(modifier.fillMaxWidth()) {
+        if (times.isEmpty()) {
+            ChartEmpty()
+            return@Column
+        }
+        Row(Modifier.fillMaxWidth().height(180.dp)) {
+            AxisLabels(ticks.reversed().map(yFormatter))
+            Canvas(Modifier.weight(1f).fillMaxHeight()) {
+                ticks.forEach { v ->
+                    val y = size.height * (1f - ((v - minV) / (maxV - minV)).toFloat())
+                    drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                }
+                fun xAt(millis: Long): Float {
+                    val found = times.binarySearch(millis)
+                    val i = if (found >= 0) found else (-found - 1).coerceIn(0, times.lastIndex)
+                    return if (times.size == 1) size.width / 2f
+                    else i.toFloat() / times.lastIndex * size.width
+                }
+                fun yAt(value: Double): Float =
+                    size.height * (1f - ((value - minV) / (maxV - minV)).toFloat())
+                band?.let { (low, high) ->
+                    val lowBy = low.associateBy { it.millis }
+                    val highBy = high.associateBy { it.millis }
+                    val shared = times.filter { it in lowBy && it in highBy }
+                    if (shared.size >= 2) {
+                        val fill = Path()
+                        shared.forEachIndexed { i, t ->
+                            val x = xAt(t)
+                            val y = yAt(highBy.getValue(t).value)
+                            if (i == 0) fill.moveTo(x, y) else fill.lineTo(x, y)
+                        }
+                        shared.asReversed().forEach { t ->
+                            fill.lineTo(xAt(t), yAt(lowBy.getValue(t).value))
+                        }
+                        fill.close()
+                        drawPath(fill, stroke.copy(alpha = 0.18f))
+                    }
+                }
+                lines.filter { it.points.isNotEmpty() }.forEach { line ->
+                    val ordered = line.points.sortedBy { it.millis }
+                    if (ordered.size == 1) {
+                        drawCircle(line.color, 5.dp.toPx(), Offset(xAt(ordered[0].millis), yAt(ordered[0].value)))
+                    } else {
+                        val path = Path()
+                        ordered.forEachIndexed { i, p ->
+                            val x = xAt(p.millis)
+                            val y = yAt(p.value)
+                            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                        }
+                        drawPath(
+                            path,
+                            line.color,
+                            style = Stroke(
+                                width = 2.5.dp.toPx(),
+                                cap = StrokeCap.Round,
+                                pathEffect = if (line.dashed) {
+                                    PathEffect.dashPathEffect(floatArrayOf(12.dp.toPx(), 8.dp.toPx()))
+                                } else {
+                                    null
+                                },
+                            ),
                         )
+                        if (ordered.size <= 16 && !line.dashed) {
+                            ordered.forEach { p ->
+                                drawCircle(line.color, 3.dp.toPx(), Offset(xAt(p.millis), yAt(p.value)))
+                            }
+                        }
                     }
                 }
             }
+        }
+        ChartXLabels(labels)
+    }
+}
+
+enum class TimedChartStyle { AREA, LINE, BARS, STAGES }
+
+@Composable
+fun TimedSeriesChart(
+    points: List<TrendPoint>,
+    modifier: Modifier = Modifier,
+    style: TimedChartStyle = TimedChartStyle.AREA,
+    lineColor: Color? = null,
+    yMin: Double? = null,
+    yMax: Double? = null,
+    fromZero: Boolean = false,
+    yLabels: List<String>? = null,
+    stageColors: List<Color> = emptyList(),
+    referenceY: Double? = null,
+    referenceColor: Color = Color(0xFF24357A),
+    yFormatter: (Double) -> String = { String.format(Locale.US, "%.0f", it) },
+) {
+    val colors = MaterialTheme.colorScheme
+    val stroke = lineColor ?: colors.primary
+    val grid = colors.outline.copy(alpha = 0.45f)
+    val drawn = remember(points, style) {
+        val sorted = points.sortedBy { it.millis }
+        if (style == TimedChartStyle.AREA || style == TimedChartStyle.LINE) downsampleSeries(sorted) else sorted
+    }
+    val values = remember(drawn, referenceY) { drawn.map { it.value } + listOfNotNull(referenceY) }
+    val rawMin = yMin ?: values.minOrNull() ?: 0.0
+    val rawMax = yMax ?: values.maxOrNull() ?: 1.0
+    val ticks = remember(rawMin, rawMax, fromZero, yLabels, yMin, yMax) {
+        when {
+            yLabels != null -> yLabels.indices.map { it.toDouble() }
+            yMin != null && yMax != null -> (0..4).map { yMin + (yMax - yMin) * it / 4.0 }
+            fromZero -> {
+                val top = niceMax(rawMax.coerceAtLeast(1.0))
+                (0..4).map { top * it / 4.0 }
+            }
+            else -> {
+                val pad = ((rawMax - rawMin) * 0.12).coerceAtLeast(if (rawMax == rawMin) 1.0 else 0.0)
+                axisTicks(rawMin - pad, rawMax + pad, 4, clampZero = false)
+            }
+        }
+    }
+    val minV = if (yLabels != null) -0.5 else ticks.first()
+    val maxV = if (yLabels != null) (yLabels.size - 0.5) else ticks.last().coerceAtLeast(minV + 1e-6)
+    val minT = drawn.minOfOrNull { it.millis } ?: 0L
+    val maxT = drawn.maxOfOrNull { it.millis } ?: 1L
+    val avgGap = drawn.zipWithNext { a, b -> (b.millis - a.millis).coerceAtLeast(1L) }
+        .takeIf { it.isNotEmpty() }?.average()?.toLong() ?: 15 * 60 * 1000L
+    val endT = maxT + avgGap
+    val span = (endT - minT).coerceAtLeast(1L)
+    val xTickLabels = remember(minT, endT) { timeAxisLabels(minT, endT) }
+
+    Column(modifier.fillMaxWidth()) {
+        if (drawn.isEmpty()) {
+            ChartEmpty()
+            return@Column
+        }
+        Row(Modifier.fillMaxWidth().height(if (style == TimedChartStyle.STAGES) 132.dp else 180.dp)) {
+            AxisLabels(
+                if (yLabels != null) yLabels.reversed() else ticks.reversed().map(yFormatter),
+            )
+            Canvas(Modifier.weight(1f).fillMaxHeight()) {
+                if (yLabels == null) {
+                    ticks.forEach { v ->
+                        val y = size.height * (1f - ((v - minV) / (maxV - minV)).toFloat())
+                        drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                    }
+                }
+                fun xAt(t: Long): Float = ((t - minT).toFloat() / span) * size.width
+                fun yAt(value: Double): Float =
+                    size.height * (1f - ((value - minV) / (maxV - minV)).toFloat())
+                when (style) {
+                    TimedChartStyle.BARS -> {
+                        drawn.forEachIndexed { i, p ->
+                            val next = drawn.getOrNull(i + 1)?.millis ?: endT
+                            val left = xAt(p.millis)
+                            val right = xAt(next)
+                            val gap = (right - left) * 0.12f
+                            val w = (right - left - gap).coerceAtLeast(1f)
+                            val top = yAt(p.value).coerceAtMost(size.height - 2f)
+                            val color = if (referenceY != null && referenceY > 0 && p.value >= referenceY) {
+                                Color(0xFF2BB673)
+                            } else {
+                                stroke
+                            }
+                            drawTopRoundedBar(
+                                color,
+                                left,
+                                top,
+                                w,
+                                size.height - top,
+                                3.dp.toPx(),
+                            )
+                        }
+                    }
+                    TimedChartStyle.STAGES -> {
+                        val rowH = size.height / (yLabels?.size ?: 4).coerceAtLeast(1)
+                        drawn.forEachIndexed { i, p ->
+                            val next = drawn.getOrNull(i + 1)?.millis ?: endT
+                            val level = p.value.roundToInt().coerceIn(0, (yLabels?.size ?: 4) - 1)
+                            val color = stageColors.getOrElse(level) { stroke }
+                            val top = size.height - (level + 1) * rowH + rowH * 0.14f
+                            drawRoundRect(
+                                color,
+                                Offset(xAt(p.millis), top),
+                                Size((xAt(next) - xAt(p.millis)).coerceAtLeast(2f), rowH * 0.72f),
+                                CornerRadius(4.dp.toPx(), 4.dp.toPx()),
+                            )
+                        }
+                    }
+                    TimedChartStyle.AREA, TimedChartStyle.LINE -> {
+                        if (drawn.size == 1) {
+                            drawCircle(stroke, 5.dp.toPx(), Offset(xAt(drawn[0].millis), yAt(drawn[0].value)))
+                        } else {
+                            val path = Path()
+                            val fill = Path()
+                            drawn.forEachIndexed { i, p ->
+                                val x = xAt(p.millis)
+                                val y = yAt(p.value)
+                                if (i == 0) {
+                                    path.moveTo(x, y)
+                                    fill.moveTo(x, size.height)
+                                    fill.lineTo(x, y)
+                                } else {
+                                    path.lineTo(x, y)
+                                    fill.lineTo(x, y)
+                                }
+                            }
+                            if (style == TimedChartStyle.AREA) {
+                                fill.lineTo(xAt(drawn.last().millis), size.height)
+                                fill.close()
+                                drawPath(
+                                    fill,
+                                    Brush.verticalGradient(
+                                        listOf(stroke.copy(alpha = 0.28f), Color.Transparent),
+                                    ),
+                                )
+                            }
+                            drawPath(
+                                path,
+                                stroke,
+                                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+                            )
+                        }
+                    }
+                }
+                referenceY?.let { rest ->
+                    val y = yAt(rest)
+                    drawLine(
+                        referenceColor,
+                        Offset(0f, y),
+                        Offset(size.width, y),
+                        2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(12.dp.toPx(), 8.dp.toPx())),
+                    )
+                }
+            }
+        }
+        TimedXLabels(xTickLabels)
+    }
+}
+
+@Composable
+private fun TimedXLabels(ticks: List<Pair<Float, String>>) {
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(start = 40.dp, top = 6.dp).height(18.dp)) {
+        ticks.forEach { (frac, label) ->
+            Text(
+                label,
+                modifier = when {
+                    frac <= 0.02f -> Modifier.align(Alignment.TopStart)
+                    frac >= 0.98f -> Modifier.align(Alignment.TopEnd)
+                    else -> Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = (maxWidth * frac - 14.dp).coerceAtLeast(0.dp))
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = labelColor,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+private fun timeAxisLabels(minMs: Long, maxMs: Long): List<Pair<Float, String>> {
+    val fmt = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+    val span = (maxMs - minMs).coerceAtLeast(1L)
+    return (0..4).map { i ->
+        val t = minMs + span * i / 4
+        (i / 4f) to fmt.format(Instant.ofEpochMilli(t))
+    }.distinctBy { it.second }
+}
+
+private fun downsampleSeries(points: List<TrendPoint>, max: Int = 500): List<TrendPoint> {
+    if (points.size <= max) return points
+    val step = (points.size - 1).toDouble() / (max - 1)
+    return List(max) { i -> points[(i * step).roundToInt().coerceIn(0, points.lastIndex)] }
+}
+
+private fun xLabelIndices(size: Int): List<Int> {
+    if (size <= 0) return emptyList()
+    if (size == 1) return listOf(0)
+    if (size <= 7) return List(size) { it }
+    val last = size - 1
+    return (0 until 5).map { ((it * last) / 4.0).roundToInt() }.distinct()
+}
+
+@Composable
+private fun ChartXLabels(
+    labels: List<String>,
+    modifier: Modifier = Modifier,
+    centered: Boolean = false,
+) {
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val indices = remember(labels.size) { xLabelIndices(labels.size) }
+    BoxWithConstraints(modifier.fillMaxWidth().padding(start = 40.dp, top = 6.dp).height(18.dp)) {
+        if (labels.isEmpty()) return@BoxWithConstraints
+        val n = labels.size
+        val last = n - 1
+        indices.forEach { i ->
+            val frac = when {
+                n <= 1 -> 0.5f
+                centered -> (i + 0.5f) / n
+                else -> i.toFloat() / last
+            }
+            Text(
+                labels[i],
+                modifier = when {
+                    !centered && i == 0 -> Modifier.align(Alignment.TopStart)
+                    !centered && i == last -> Modifier.align(Alignment.TopEnd)
+                    else -> Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = (maxWidth * frac - 14.dp).coerceAtLeast(0.dp))
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = labelColor,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -578,7 +948,6 @@ fun HistogramChart(
     val maxC = bins.maxOfOrNull { it.count }?.coerceAtLeast(1) ?: 1
     val maxV = niceMax(maxC.toDouble())
     val ticks = remember(maxV) { (0..4).map { maxV * it / 4.0 } }
-    val xStep = max(1, (bins.size - 1) / 4)
 
     Column(modifier.fillMaxWidth()) {
         if (bins.isEmpty()) {
@@ -611,22 +980,7 @@ fun HistogramChart(
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 40.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            bins.forEachIndexed { i, b ->
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    if (i % xStep == 0 || i == bins.lastIndex) {
-                        Text(
-                            b.label.substringBefore(' '),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = labelColor,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                            textAlign = TextAlign.Center,
-                        )
-                    }
-                }
-            }
-        }
+        ChartXLabels(bins.map { it.label.substringBefore(' ') }, centered = true)
         if (xUnit.isNotBlank()) {
             Text(
                 xUnit,
