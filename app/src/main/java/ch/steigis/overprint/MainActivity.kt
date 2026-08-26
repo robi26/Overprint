@@ -19,6 +19,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Refresh
@@ -115,8 +116,8 @@ private fun OverprintNav(
         "settings" to "Settings",
         "detail" to (state.selected?.activity?.name ?: "Activity"),
     )
-    val moreRoutes = setOf("more", "health", "heatmap", "settings")
-    val showBack = route == "detail" || route == "health" || route == "heatmap" || route == "settings"
+    val moreRoutes = setOf("more", "heatmap", "settings")
+    val showBack = route == "detail" || route == "heatmap" || route == "settings"
     var confirmDelete by remember { mutableStateOf(false) }
     KeepAwakeWhileSyncing(state.garminSync.running)
 
@@ -195,6 +196,12 @@ private fun OverprintNav(
                         onClick = { nav.navigate("calendar") { launchSingleTop = true } },
                         icon = { Icon(Icons.Outlined.CalendarMonth, contentDescription = null) },
                         label = { Text("Calendar") },
+                    )
+                    NavigationBarItem(
+                        selected = route == "health",
+                        onClick = { nav.navigate("health") { launchSingleTop = true } },
+                        icon = { Icon(Icons.Outlined.Favorite, contentDescription = null) },
+                        label = { Text("Health") },
                     )
                     NavigationBarItem(
                         selected = route == "stats",
@@ -281,7 +288,6 @@ private fun OverprintNav(
             }
             composable("more") {
                 MoreScreen(
-                    onHealth = { nav.navigate("health") },
                     onHeatmap = { nav.navigate("heatmap") },
                     onSettings = { nav.navigate("settings") },
                 )

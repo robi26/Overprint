@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
@@ -26,7 +25,6 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun MoreScreen(
-    onHealth: () -> Unit,
     onHeatmap: () -> Unit,
     onSettings: () -> Unit,
 ) {
@@ -34,12 +32,6 @@ fun MoreScreen(
         Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        MoreRow(
-            title = "Health",
-            subtitle = "Daily steps, sleep, stress, and body battery",
-            icon = Icons.Outlined.Favorite,
-            onClick = onHealth,
-        )
         MoreRow(
             title = "Heatmap",
             subtitle = "All GPS tracks, filtered by sport and year",

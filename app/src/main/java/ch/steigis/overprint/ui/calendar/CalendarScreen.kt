@@ -81,8 +81,11 @@ fun CalendarScreen(
     val cells = List(firstDow) { 0 } + (1..daysInMonth).toList()
     val selected = byDay[selectedDay].orEmpty()
     val selectedIso = selectedDay?.let { LocalDate.of(year, month + 1, it).toString() }
+    val selectedIsFuture = selectedIso?.let { runCatching { LocalDate.parse(it) }.getOrNull()?.isAfter(LocalDate.now()) } == true
     val title = fmt.monthYear(cal.timeInMillis)
-    LaunchedEffect(selectedIso, syncRunning) { onEnsureHealth(selectedIso) }
+    LaunchedEffect(selectedIso, selectedIsFuture, syncRunning) {
+        onEnsureHealth(if (selectedIsFuture) null else selectedIso)
+    }
 
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -139,7 +142,7 @@ fun CalendarScreen(
             modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp),
         )
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (selectedIso != null) {
+            if (selectedIso != null && !selectedIsFuture) {
                 item(key = "health-$selectedIso") {
                     HealthDayRow(
                         dateIso = selectedIso,
