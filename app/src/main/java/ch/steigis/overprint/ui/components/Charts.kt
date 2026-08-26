@@ -632,11 +632,12 @@ fun LineChart(
                     val y = size.height * (1f - ((v - minV) / (maxV - minV)).toFloat())
                     drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
                 }
-fun xAt(millis: Long): Float {
-    val i = times.binarySearch(millis).let { if (it >= 0) it else 0 }
-    return if (times.size == 1) size.width / 2f
-    else i.toFloat() / (times.size - 1) * size.width
-}
+                fun xAt(millis: Long): Float {
+                    val found = times.binarySearch(millis)
+                    val i = if (found >= 0) found else (-found - 1).coerceIn(0, times.lastIndex)
+                    return if (times.size == 1) size.width / 2f
+                    else i.toFloat() / times.lastIndex * size.width
+                }
                 fun yAt(value: Double): Float =
                     size.height * (1f - ((value - minV) / (maxV - minV)).toFloat())
                 band?.let { (low, high) ->
