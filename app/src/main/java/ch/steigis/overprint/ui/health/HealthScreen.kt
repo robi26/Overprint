@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.data.remote.garmin.HealthReloadAction
+import ch.steigis.overprint.data.remote.garmin.healthChartsPresent
 import ch.steigis.overprint.data.remote.garmin.healthReloadAction
 import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.DailyHealth
@@ -310,13 +311,17 @@ private fun HealthDayTab(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            val reloadAction = remember(selectedDate, daySamples, reloads, seriesLoading) {
-                val parsed = selectedDate?.let { iso -> runCatching { LocalDate.parse(iso) }.getOrNull() }
-                if (parsed == null || seriesLoading) {
-                    HealthReloadAction.NONE
-                } else {
-                    healthReloadAction(reloads[selectedDate], daySamples.isNotEmpty(), parsed)
-                }
+            // Not remembered: the reading depends on the clock, so a memoised one would sit on
+            // WAIT or BLOCKED long after Garmin's window had passed.
+            val parsedDate = runCatching { LocalDate.parse(selectedDate) }.getOrNull()
+            val reloadAction = if (parsedDate == null || seriesLoading) {
+                HealthReloadAction.NONE
+            } else {
+                healthReloadAction(
+                    reload = reloads[selectedDate],
+                    hasSamples = healthChartsPresent(daySamples.map { it.metric }),
+                    date = parsedDate,
+                )
             }
             if (reloadAction != HealthReloadAction.NONE) {
                 HealthChartReloadCard(

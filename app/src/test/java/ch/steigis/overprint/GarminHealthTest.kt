@@ -4,6 +4,7 @@ import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_POLL_DELAYS_MILLIS
 import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_READY_MINUTES
 import ch.steigis.overprint.data.remote.garmin.HealthReloadAction
+import ch.steigis.overprint.data.remote.garmin.healthChartsPresent
 import ch.steigis.overprint.data.remote.garmin.healthDateChunks
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
@@ -80,6 +81,20 @@ class GarminHealthTest {
             healthHistoryRange(oldestStored = "2026-08-11", today = today),
             healthHistoryRange(oldestStored = "2026-08-11", oldestAttempted = "", today = today),
         )
+    }
+
+    /**
+     * A day can keep the step curve — Garmin rebuilds that from the totals — while the real
+     * detail charts are offloaded, so the day must still offer a reload.
+     */
+    @Test
+    fun aRebuildableCurveDoesNotCountAsHavingTheDetailCharts() {
+        assertFalse(healthChartsPresent(emptySet()))
+        assertFalse(healthChartsPresent(setOf(HealthSeries.STEPS, HealthSeries.FLOORS)))
+        assertTrue(healthChartsPresent(setOf(HealthSeries.HEART_RATE)))
+        assertTrue(healthChartsPresent(setOf(HealthSeries.STEPS, HealthSeries.BODY_BATTERY)))
+        // A device without the optional sensors must not be nagged about missing curves.
+        assertTrue(healthChartsPresent(setOf(HealthSeries.HEART_RATE, HealthSeries.STRESS)))
     }
 
     @Test

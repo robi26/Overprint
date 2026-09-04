@@ -18,6 +18,7 @@ import ch.steigis.overprint.data.prefs.AppSettings
 import ch.steigis.overprint.data.prefs.SettingsStore
 import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_POLL_DELAYS_MILLIS
+import ch.steigis.overprint.data.remote.garmin.healthChartsPresent
 import ch.steigis.overprint.data.repo.ActivityRepository
 import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.Activity
@@ -272,7 +273,7 @@ class AppViewModel(
         _state.update { it.copy(healthReloadPending = date, healthReloadStatus = null) }
         healthReloadJob = viewModelScope.launch {
             try {
-                if (fetchReloadedCharts(date) == 0) {
+                if (!fetchReloadedCharts(date)) {
                     _state.update { it.copy(healthReloadStatus = "Garmin has not sent this day's charts yet.") }
                 }
             } catch (e: CancellationException) {
@@ -288,24 +289,29 @@ class AppViewModel(
     private suspend fun awaitReloadedCharts(date: String) {
         HEALTH_RELOAD_POLL_DELAYS_MILLIS.forEach { wait ->
             delay(wait)
-            if (fetchReloadedCharts(date) > 0) return
+            if (fetchReloadedCharts(date)) return
         }
         _state.update {
             it.copy(healthReloadStatus = "Garmin is still working on this day. Check again in a few minutes.")
         }
     }
 
-    /** Re-asks for every metric: a reload replaces the day, so partial stored curves are stale. */
-    private suspend fun fetchReloadedCharts(date: String): Int {
+    /**
+     * Re-asks for every metric, because a reload replaces the day. Reports whether the day's
+     * own curves arrived rather than how many points landed: a day can already carry a curve
+     * Garmin rebuilds from the totals while the reloaded ones are still missing.
+     */
+    private suspend fun fetchReloadedCharts(date: String): Boolean {
         seriesFetchedDates.remove(date)
-        val count = withContext(Dispatchers.IO) { repo.syncHealthSeriesForDate(date, force = true) }
+        withContext(Dispatchers.IO) { repo.syncHealthSeriesForDate(date, force = true) }
         val samples = withContext(Dispatchers.IO) { repo.healthSamples(date) }
+        val arrived = healthChartsPresent(samples.map { it.metric })
         _state.update { st ->
             val next = if (st.healthSamplesDate == date) st.copy(healthSamples = samples) else st
-            if (count > 0) next.copy(healthReloadStatus = "Garmin sent this day's charts.") else next
+            if (arrived) next.copy(healthReloadStatus = "Garmin sent this day's charts.") else next
         }
-        if (count > 0) seriesFetchedDates += date
-        return count
+        if (arrived) seriesFetchedDates += date
+        return arrived
     }
 
     private suspend fun fetchDailyHealthIfMissing(date: String) {

@@ -18,6 +18,7 @@ import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.data.remote.garmin.garminReachedKnownHistory
 import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_LIMIT_HOURS
 import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_READY_MINUTES
+import ch.steigis.overprint.data.remote.garmin.healthChartsPresent
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
 import ch.steigis.overprint.data.remote.garmin.healthReloadEligible
@@ -86,8 +87,10 @@ class ActivityRepository(
         val client = GarminClient()
         authenticate(client, prefs) {}
         val series = client.pullHealthSeries(day, day) { if (it == date) wanted else emptySet() }
+        // A metric Garmin answers with nothing keeps whatever is already stored: a reload that
+        // comes back short must not delete curves the day already had.
         storeHealthSeries(series, overwriteDates = if (force) setOf(date) else emptySet())
-        noteHealthChartOutcome(date, hasSeries = stored.isNotEmpty() || series.isNotEmpty())
+        noteHealthChartOutcome(date, stored + series.map { it.metric })
         return series.size
     }
 
@@ -119,11 +122,11 @@ class ActivityRepository(
      * Remember why a day has no curves: offloaded by Garmin, waiting on a queued reload,
      * or stored for good. A queued reload keeps its clock until Garmin has had its minutes.
      */
-    private suspend fun noteHealthChartOutcome(date: String, hasSeries: Boolean) {
+    private suspend fun noteHealthChartOutcome(date: String, present: Set<HealthSeries>) {
         val day = runCatching { java.time.LocalDate.parse(date) }.getOrNull() ?: return
         val now = System.currentTimeMillis()
         val existing = db.healthReloads().byDate(date)?.toModel()
-        if (hasSeries) {
+        if (healthChartsPresent(present)) {
             db.healthReloads().upsert(
                 HealthChartReload(
                     date = date,
@@ -170,11 +173,11 @@ class ActivityRepository(
      * curves, so the Health screen can offer the reload without another round trip.
      */
     private suspend fun noteHealthChartRange(start: java.time.LocalDate, end: java.time.LocalDate) {
-        val withSeries = db.healthSamples().presentMetrics(start.toString(), end.toString())
-            .map { it.date }
-            .toSet()
+        val byDate = db.healthSamples().presentMetrics(start.toString(), end.toString())
+            .groupBy({ it.date }, { runCatching { HealthSeries.valueOf(it.metric) }.getOrNull() })
+            .mapValues { (_, names) -> names.filterNotNull().toSet() }
         db.health().datesInRange(start.toString(), end.toString()).forEach { iso ->
-            noteHealthChartOutcome(iso, hasSeries = iso in withSeries)
+            noteHealthChartOutcome(iso, byDate[iso].orEmpty())
         }
     }
 

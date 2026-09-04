@@ -33,6 +33,25 @@ internal fun healthSeriesToDownload(
 }
 
 /**
+ * The all-day curves a Garmin wearable records for every worn day. The optional ones are
+ * deliberately left out: SpO2, respiration and sleep depend on the sensor and on settings,
+ * and the step / floor curves can be rebuilt from the daily totals, so their absence says
+ * nothing about whether Garmin still holds the day's detail charts.
+ */
+internal val HEALTH_CORE_SERIES = setOf(
+    HealthSeries.HEART_RATE,
+    HealthSeries.STRESS,
+    HealthSeries.BODY_BATTERY,
+)
+
+/**
+ * Whether a day still has its detail charts. A day can keep a curve Garmin rebuilds from the
+ * totals while the real ones are offloaded, so "has any sample at all" is too generous a test.
+ */
+internal fun healthChartsPresent(stored: Iterable<HealthSeries>): Boolean =
+    stored.any { it in HEALTH_CORE_SERIES }
+
+/**
  * Garmin keeps the daily detail charts of recent days online and offloads older ones.
  * A day at least this old can be missing its curves purely because it was offloaded.
  */
