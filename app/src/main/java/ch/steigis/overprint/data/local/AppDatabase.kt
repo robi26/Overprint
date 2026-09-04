@@ -201,8 +201,11 @@ interface LapDao {
 }
 
 @Database(
-    entities = [ActivityEntity::class, TrackPointEntity::class, LapEntity::class, DailyHealthEntity::class, HealthSampleEntity::class],
-    version = 6,
+    entities = [
+        ActivityEntity::class, TrackPointEntity::class, LapEntity::class,
+        DailyHealthEntity::class, HealthSampleEntity::class, HealthReloadEntity::class,
+    ],
+    version = 7,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -211,6 +214,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun laps(): LapDao
     abstract fun health(): DailyHealthDao
     abstract fun healthSamples(): HealthSampleDao
+    abstract fun healthReloads(): HealthReloadDao
 
     @Transaction
     suspend fun replaceDetail(activity: ActivityEntity, track: List<TrackPointEntity>, laps: List<LapEntity>) {
@@ -293,5 +297,21 @@ val MIGRATION_2_3 = object : Migration(2, 3) {
 val MIGRATION_5_6 = object : Migration(5, 6) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE daily_health ADD COLUMN floorsGoal REAL")
+    }
+}
+
+val MIGRATION_6_7 = object : Migration(6, 7) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS health_reload (
+                date TEXT NOT NULL PRIMARY KEY,
+                state TEXT NOT NULL,
+                requestedAtMillis INTEGER NOT NULL,
+                checkedAtMillis INTEGER NOT NULL,
+                message TEXT
+            )
+            """.trimIndent(),
+        )
     }
 }

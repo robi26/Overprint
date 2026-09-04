@@ -18,6 +18,7 @@ import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.DataSource
@@ -28,6 +29,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.text.SimpleDateFormat
 import java.time.LocalDate
 import java.util.Locale
@@ -351,6 +353,24 @@ class GarminClient {
                 .filter { it.date in bodyBatteryDates }
         }
         samples.associateBy { Triple(it.date, it.metric, it.timestampMillis) }.values.toList()
+    }
+
+    /**
+     * Ask Garmin to restore one day's offloaded detail charts — the "Reload Chart" button in
+     * Garmin Connect. The reload is queued: the curves appear a few minutes later, and Garmin
+     * caps how many days can be reloaded per 24 hours. An expired session still aborts.
+     */
+    suspend fun requestHealthChartReload(date: String): HealthReloadState = withContext(Dispatchers.IO) {
+        val url = connectUrl("wellness-service", "wellness", "epoch", "request", date)
+        val req = Request.Builder()
+            .url(url)
+            .post(ByteArray(0).toRequestBody(null, 0, 0))
+            .jsonHeaders()
+            .build()
+        val (code, body) = executeRaw(req)
+        if (code == 401 || code == 403) throw GarminApiException(code, url, bodyShape(body))
+        Log.i(TAG, "chart reload $date -> $code")
+        healthReloadStateFrom(code, body)
     }
 
     private fun heartRateUrl(user: String, date: String): String =

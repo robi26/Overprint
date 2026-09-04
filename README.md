@@ -45,6 +45,7 @@ sdk.dir=C:\\Users\\<you>\\AppData\\Local\\Android\\Sdk
 - **Detail** — summary, street map with metric-coloured track, graphs, laps, HR and power zones, best rolling splits
 - **Calendar** — month grid with sport-coloured dots
 - **Stats** — week / month / YTD / all-time, distance trends, histograms, HR vs pace scatter, year filter
+- **Health** — Garmin daily totals and all-day curves; older days whose detail charts Garmin has offloaded can be reloaded per day and are then stored locally
 - **Heatmap** — all GPS tracks on OpenStreetMap, layer menu (streets / dark / none, heat, tracks), zoom filters the list
 - **Settings** — metric/imperial, appearance, Garmin login, file import, demo data, max HR and FTP
 

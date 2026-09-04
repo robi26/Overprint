@@ -15,6 +15,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -22,6 +24,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
@@ -41,8 +44,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
+import ch.steigis.overprint.data.remote.garmin.HealthReloadAction
+import ch.steigis.overprint.data.remote.garmin.healthChartsPresent
+import ch.steigis.overprint.data.remote.garmin.healthReloadAction
 import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthChartReload
+import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.stats.TrendPoint
 import ch.steigis.overprint.ui.components.BarChart
@@ -157,9 +165,15 @@ fun HealthScreen(
     summaryLoading: Boolean,
     healthDate: String?,
     garminSync: GarminSyncProgress,
+    reloads: Map<String, HealthChartReload>,
+    reloadPending: String?,
+    reloadStatus: String?,
+    canReload: Boolean,
     fmt: Formatters,
     onLoadSamples: (String?) -> Unit,
     onHealthDate: (String?) -> Unit,
+    onReloadCharts: (String) -> Unit,
+    onCheckCharts: (String) -> Unit,
 ) {
     var tab by remember { mutableStateOf(HealthTab.DAY) }
     Column(Modifier.fillMaxSize()) {
@@ -175,8 +189,9 @@ fun HealthScreen(
         }
         when (tab) {
             HealthTab.DAY -> HealthDayTab(
-                days, samples, samplesDate, seriesLoading, summaryLoading, garminSync.running, healthDate, fmt,
-                onLoadSamples, onHealthDate,
+                days, samples, samplesDate, seriesLoading, summaryLoading, garminSync.running, healthDate,
+                reloads, reloadPending, reloadStatus, canReload, fmt,
+                onLoadSamples, onHealthDate, onReloadCharts, onCheckCharts,
             )
             HealthTab.STATS -> HealthStatsTab(days, fmt)
         }
@@ -192,9 +207,15 @@ private fun HealthDayTab(
     summaryLoading: Boolean,
     syncRunning: Boolean,
     healthDate: String?,
+    reloads: Map<String, HealthChartReload>,
+    reloadPending: String?,
+    reloadStatus: String?,
+    canReload: Boolean,
     fmt: Formatters,
     onLoadSamples: (String?) -> Unit,
     onHealthDate: (String?) -> Unit,
+    onReloadCharts: (String) -> Unit,
+    onCheckCharts: (String) -> Unit,
 ) {
     val selectedDate = healthDate
     LaunchedEffect(days, selectedDate) {
@@ -288,6 +309,31 @@ private fun HealthDayTab(
                 Text(
                     "Loading graphs for this day…",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // Not remembered: the reading depends on the clock, so a memoised one would sit on
+            // WAIT or BLOCKED long after Garmin's window had passed.
+            val parsedDate = runCatching { LocalDate.parse(selectedDate) }.getOrNull()
+            val reloadAction = if (parsedDate == null || seriesLoading) {
+                HealthReloadAction.NONE
+            } else {
+                healthReloadAction(
+                    reload = reloads[selectedDate],
+                    hasSamples = healthChartsPresent(daySamples.map { it.metric }),
+                    date = parsedDate,
+                )
+            }
+            if (reloadAction != HealthReloadAction.NONE) {
+                HealthChartReloadCard(
+                    date = selectedDate,
+                    action = reloadAction,
+                    reload = reloads[selectedDate],
+                    busy = reloadPending == selectedDate,
+                    status = reloadStatus,
+                    signedIn = canReload,
+                    enabled = canReload && reloadPending == null && !syncRunning,
+                    onReload = onReloadCharts,
+                    onCheck = onCheckCharts,
                 )
             }
             if (day != null) {
@@ -425,6 +471,93 @@ private fun HealthStatsTab(days: List<DailyHealth>, fmt: Formatters) {
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Garmin Connect offloads the detail charts of older days and only restores them on request
+ * ("Reload Chart" in the Garmin app). Explain that, and offer the same reload here — whatever
+ * comes back is stored locally, so a reloaded day stays visible past Garmin's 7-day window.
+ */
+@Composable
+private fun HealthChartReloadCard(
+    date: String,
+    action: HealthReloadAction,
+    reload: HealthChartReload?,
+    busy: Boolean,
+    status: String?,
+    signedIn: Boolean,
+    enabled: Boolean,
+    onReload: (String) -> Unit,
+    onCheck: (String) -> Unit,
+) {
+    val note = when (action) {
+        HealthReloadAction.BLOCKED ->
+            "Garmin's daily chart-reload limit is used up. It lifts 24 hours after the last reload, " +
+                "then this day can be reloaded again."
+        HealthReloadAction.WAIT ->
+            "Garmin is restoring this day. That usually takes a few minutes — Overprint keeps " +
+                "checking, or check now."
+        else ->
+            "Garmin Connect has offloaded this day's detail charts. Reload them to get heart rate, " +
+                "stress, body battery, sleep stages and the other graphs. Overprint stores whatever " +
+                "arrives, so the day stays readable afterwards."
+    }
+    ChartCard(
+        title = "Detail charts",
+        headline = when (action) {
+            HealthReloadAction.WAIT -> "Reloading…"
+            HealthReloadAction.BLOCKED -> "Reload limit reached"
+            else -> "Offloaded by Garmin"
+        },
+        subtitle = note,
+    ) {
+        // The stored note repeats the card's own subtitle while the day is merely offloaded.
+        val stored = reload?.takeIf { it.state != HealthReloadState.OFFLOADED }?.message
+        val extra = status ?: stored
+        if (!extra.isNullOrBlank()) {
+            Text(
+                extra,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Row(
+            Modifier.padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+            }
+            when (action) {
+                HealthReloadAction.WAIT -> OutlinedButton(
+                    onClick = { onCheck(date) },
+                    enabled = enabled,
+                ) {
+                    Text("Check now")
+                }
+                HealthReloadAction.BLOCKED -> OutlinedButton(
+                    onClick = { onCheck(date) },
+                    enabled = enabled,
+                ) {
+                    Text("Check again")
+                }
+                else -> Button(
+                    onClick = { onReload(date) },
+                    enabled = enabled,
+                ) {
+                    Text("Reload charts")
+                }
+            }
+        }
+        if (!signedIn) {
+            Text(
+                "Sign in to Garmin Connect in Settings to reload older charts.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
