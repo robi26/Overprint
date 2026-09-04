@@ -16,14 +16,20 @@ import ch.steigis.overprint.data.remote.garmin.GarminApiException
 import ch.steigis.overprint.data.remote.garmin.GarminClient
 import ch.steigis.overprint.data.remote.garmin.GarminSyncProgress
 import ch.steigis.overprint.data.remote.garmin.garminReachedKnownHistory
+import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_LIMIT_HOURS
+import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_READY_MINUTES
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
+import ch.steigis.overprint.data.remote.garmin.healthReloadEligible
+import ch.steigis.overprint.data.remote.garmin.healthReloadMessage
 import ch.steigis.overprint.data.remote.garmin.healthSeriesToDownload
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthChartReload
+import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.DataSource
 import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.HealthSeries
@@ -59,20 +65,117 @@ class ActivityRepository(
     suspend fun healthSamples(date: String): List<HealthSample> =
         db.healthSamples().forDate(date).map { it.toModel() }
 
-    suspend fun syncHealthSeriesForDate(date: String): Int {
+    val healthReloads: Flow<List<HealthChartReload>> = db.healthReloads().observeAll().map { list ->
+        list.map { it.toModel() }
+    }
+
+    /**
+     * Download the day's missing detail curves. [force] asks for every metric again, which is
+     * what a finished chart reload needs, and records whether Garmin actually had curves —
+     * an older day usually has none until its charts are reloaded.
+     */
+    suspend fun syncHealthSeriesForDate(date: String, force: Boolean = false): Int {
         val prefs = settings.settings.first()
         if (!prefs.hasGarminCredentials) return 0
         val stored = db.healthSamples().metricsForDate(date)
             .mapNotNull { runCatching { HealthSeries.valueOf(it) }.getOrNull() }
             .toSet()
-        val wanted = healthSeriesToDownload(stored, refreshAll = false)
+        val wanted = healthSeriesToDownload(stored, refreshAll = force)
         if (wanted.isEmpty()) return 0
         val day = java.time.LocalDate.parse(date)
         val client = GarminClient()
         authenticate(client, prefs) {}
         val series = client.pullHealthSeries(day, day) { if (it == date) wanted else emptySet() }
-        storeHealthSeries(series, overwriteDates = emptySet())
+        storeHealthSeries(series, overwriteDates = if (force) setOf(date) else emptySet())
+        noteHealthChartOutcome(date, hasSeries = stored.isNotEmpty() || series.isNotEmpty())
         return series.size
+    }
+
+    /**
+     * Garmin's "Reload Chart": queue the restore of one offloaded day. The curves arrive a few
+     * minutes later, so the caller has to come back and pull them with [syncHealthSeriesForDate].
+     */
+    suspend fun requestHealthChartReload(date: String): HealthChartReload {
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) {
+            error("Enter your Garmin Connect email and password in Settings")
+        }
+        val client = GarminClient()
+        authenticate(client, prefs) {}
+        val state = client.requestHealthChartReload(date)
+        val now = System.currentTimeMillis()
+        val row = HealthChartReload(
+            date = date,
+            state = state,
+            requestedAtMillis = now,
+            checkedAtMillis = now,
+            message = healthReloadMessage(state),
+        )
+        db.healthReloads().upsert(row.toEntity())
+        return row
+    }
+
+    /**
+     * Remember why a day has no curves: offloaded by Garmin, waiting on a queued reload,
+     * or stored for good. A queued reload keeps its clock until Garmin has had its minutes.
+     */
+    private suspend fun noteHealthChartOutcome(date: String, hasSeries: Boolean) {
+        val day = runCatching { java.time.LocalDate.parse(date) }.getOrNull() ?: return
+        val now = System.currentTimeMillis()
+        val existing = db.healthReloads().byDate(date)?.toModel()
+        if (hasSeries) {
+            db.healthReloads().upsert(
+                HealthChartReload(
+                    date = date,
+                    state = HealthReloadState.LOADED,
+                    requestedAtMillis = existing?.requestedAtMillis ?: 0L,
+                    checkedAtMillis = now,
+                ).toEntity(),
+            )
+            return
+        }
+        if (!healthReloadEligible(day)) return
+        if (existing != null && healthReloadStillWaiting(existing, now)) {
+            db.healthReloads().upsert(existing.copy(checkedAtMillis = now).toEntity())
+            return
+        }
+        // A reload whose window has passed without curves means Garmin had nothing to send.
+        val state = if (existing?.state == HealthReloadState.REQUESTED) {
+            HealthReloadState.UNAVAILABLE
+        } else {
+            HealthReloadState.OFFLOADED
+        }
+        db.healthReloads().upsert(
+            HealthChartReload(
+                date = date,
+                state = state,
+                requestedAtMillis = existing?.requestedAtMillis ?: 0L,
+                checkedAtMillis = now,
+                message = healthReloadMessage(state),
+            ).toEntity(),
+        )
+    }
+
+    /** A queued reload, or a spent quota, keeps its state until its own clock runs out. */
+    private fun healthReloadStillWaiting(row: HealthChartReload, nowMillis: Long): Boolean = when (row.state) {
+        HealthReloadState.REQUESTED ->
+            nowMillis - row.requestedAtMillis < HEALTH_RELOAD_READY_MINUTES * 60_000L
+        HealthReloadState.LIMIT_REACHED ->
+            nowMillis - row.requestedAtMillis < HEALTH_RELOAD_LIMIT_HOURS * 3_600_000L
+        else -> false
+    }
+
+    /**
+     * After a bulk pull, record which of the days that have totals are also missing their
+     * curves, so the Health screen can offer the reload without another round trip.
+     */
+    private suspend fun noteHealthChartRange(start: java.time.LocalDate, end: java.time.LocalDate) {
+        val withSeries = db.healthSamples().presentMetrics(start.toString(), end.toString())
+            .map { it.date }
+            .toSet()
+        db.health().datesInRange(start.toString(), end.toString()).forEach { iso ->
+            noteHealthChartOutcome(iso, hasSeries = iso in withSeries)
+        }
     }
 
     suspend fun syncDailyHealthForDate(date: String): DailyHealth? {
@@ -244,7 +347,7 @@ class ActivityRepository(
         }
         val client = GarminClient()
         authenticate(client, prefs, progress)
-        val (start, end) = healthHistoryRange(db.health().oldestDate())
+        val (start, end) = healthHistoryRange(db.health().oldestDate(), prefs.healthHistoryOldest)
         if (end.isBefore(start)) {
             progress(GarminSyncProgress(running = false, message = "No older health window to load"))
             return
@@ -253,10 +356,17 @@ class ActivityRepository(
         val stored = pullAndStoreHealth(client, start, end, refreshToday = false) { message ->
             progress(GarminSyncProgress(running = true, message = message))
         }
+        // Move the walk back even when Garmin had nothing for the window, otherwise the next
+        // press would ask for the same empty range again and never reach further history.
+        settings.update { it.copy(healthHistoryOldest = start.toString()) }
         progress(
             GarminSyncProgress(
                 running = false,
-                message = "Stored $stored health ${if (stored == 1) "day" else "days"} ($start – $end)",
+                message = if (stored == 0) {
+                    "No Garmin health for $start – $end. Load again to go further back."
+                } else {
+                    "Stored $stored health ${if (stored == 1) "day" else "days"} ($start – $end)"
+                },
                 current = stored,
                 total = stored,
             ),
@@ -316,6 +426,7 @@ class ActivityRepository(
                 series,
                 overwriteDates = if (refreshToday) setOf(todayIso) else emptySet(),
             )
+            noteHealthChartRange(start, end)
         }.onFailure { err ->
             if (err is CancellationException) throw err
             if (err is GarminApiException && (err.isAuthFailure || err.httpCode == 429)) throw err

@@ -1,9 +1,15 @@
 package ch.steigis.overprint
 
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_POLL_DELAYS_MILLIS
+import ch.steigis.overprint.data.remote.garmin.HEALTH_RELOAD_READY_MINUTES
+import ch.steigis.overprint.data.remote.garmin.HealthReloadAction
 import ch.steigis.overprint.data.remote.garmin.healthDateChunks
 import ch.steigis.overprint.data.remote.garmin.healthHistoryRange
 import ch.steigis.overprint.data.remote.garmin.healthRecentRange
+import ch.steigis.overprint.data.remote.garmin.healthReloadAction
+import ch.steigis.overprint.data.remote.garmin.healthReloadEligible
+import ch.steigis.overprint.data.remote.garmin.healthReloadStateFrom
 import ch.steigis.overprint.data.remote.garmin.healthSeriesToDownload
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.data.remote.garmin.parseBodyBatteryReports
@@ -19,8 +25,11 @@ import ch.steigis.overprint.data.remote.garmin.parseStepsChart
 import ch.steigis.overprint.data.remote.garmin.parseStepsStats
 import ch.steigis.overprint.data.remote.garmin.parseStressSeries
 import ch.steigis.overprint.data.remote.garmin.parseWellnessStats
+import ch.steigis.overprint.domain.model.HealthChartReload
+import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.HealthSeries
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -50,6 +59,107 @@ class GarminHealthTest {
         val beforeSync = healthHistoryRange(oldestStored = null, today = today)
         assertEquals(LocalDate.of(2026, 5, 13), beforeSync.first)
         assertEquals(LocalDate.of(2026, 8, 10), beforeSync.second)
+    }
+
+    /** A window Garmin answers with nothing must still move the walk further back. */
+    @Test
+    fun historyWalkAdvancesPastWindowsGarminHasNoDataFor() {
+        val today = LocalDate.of(2026, 8, 24)
+        val attempted = healthHistoryRange(oldestStored = "2026-08-11", today = today).first
+        assertEquals(LocalDate.of(2026, 5, 13), attempted)
+        assertEquals(
+            LocalDate.of(2026, 2, 12) to LocalDate.of(2026, 5, 12),
+            healthHistoryRange(
+                oldestStored = "2026-08-11",
+                oldestAttempted = attempted.toString(),
+                today = today,
+            ),
+        )
+        // A blank cursor is the pre-upgrade state and must not shift the window.
+        assertEquals(
+            healthHistoryRange(oldestStored = "2026-08-11", today = today),
+            healthHistoryRange(oldestStored = "2026-08-11", oldestAttempted = "", today = today),
+        )
+    }
+
+    @Test
+    fun onlyPastDaysCanHaveOffloadedCharts() {
+        val today = LocalDate.of(2026, 8, 24)
+        assertTrue(healthReloadEligible(LocalDate.of(2026, 8, 23), today))
+        assertFalse(healthReloadEligible(today, today))
+        assertFalse(healthReloadEligible(today.plusDays(1), today))
+    }
+
+    @Test
+    fun offersAReloadOnlyWhileTheDayHasNoCurves() {
+        val today = LocalDate.of(2026, 8, 24)
+        val day = LocalDate.of(2026, 3, 2)
+        val now = 1_000_000_000L
+        assertEquals(
+            HealthReloadAction.REQUEST,
+            healthReloadAction(null, hasSamples = false, date = day, today = today, nowMillis = now),
+        )
+        assertEquals(
+            HealthReloadAction.NONE,
+            healthReloadAction(null, hasSamples = true, date = day, today = today, nowMillis = now),
+        )
+        assertEquals(
+            HealthReloadAction.NONE,
+            healthReloadAction(null, hasSamples = false, date = today, today = today, nowMillis = now),
+        )
+    }
+
+    @Test
+    fun waitsOutAQueuedReloadThenLetsTheUserAskAgain() {
+        val today = LocalDate.of(2026, 8, 24)
+        val day = LocalDate.of(2026, 3, 2)
+        val requestedAt = 1_000_000_000L
+        val queued = HealthChartReload("2026-03-02", HealthReloadState.REQUESTED, requestedAt, requestedAt)
+        assertEquals(
+            HealthReloadAction.WAIT,
+            healthReloadAction(queued, false, day, today, requestedAt + 60_000L),
+        )
+        assertEquals(
+            HealthReloadAction.REQUEST,
+            healthReloadAction(queued, false, day, today, requestedAt + 20 * 60_000L),
+        )
+    }
+
+    @Test
+    fun blocksReloadsUntilGarminsDailyQuotaResets() {
+        val today = LocalDate.of(2026, 8, 24)
+        val day = LocalDate.of(2026, 3, 2)
+        val at = 1_000_000_000L
+        val spent = HealthChartReload("2026-03-02", HealthReloadState.LIMIT_REACHED, at, at)
+        assertEquals(
+            HealthReloadAction.BLOCKED,
+            healthReloadAction(spent, false, day, today, at + 23 * 3_600_000L),
+        )
+        assertEquals(
+            HealthReloadAction.REQUEST,
+            healthReloadAction(spent, false, day, today, at + 25 * 3_600_000L),
+        )
+    }
+
+    /** The last automatic re-check must land while the day still counts as waiting. */
+    @Test
+    fun pollingScheduleFitsInsideTheWaitWindow() {
+        assertTrue(HEALTH_RELOAD_POLL_DELAYS_MILLIS.isNotEmpty())
+        assertTrue(HEALTH_RELOAD_POLL_DELAYS_MILLIS.sum() < HEALTH_RELOAD_READY_MINUTES * 60_000L)
+    }
+
+    @Test
+    fun readsTheUndocumentedReloadResponseDefensively() {
+        assertEquals(HealthReloadState.REQUESTED, healthReloadStateFrom(200, ""))
+        assertEquals(HealthReloadState.REQUESTED, healthReloadStateFrom(202, """{"requestId":42}"""))
+        assertEquals(HealthReloadState.REQUESTED, healthReloadStateFrom(409, ""))
+        assertEquals(HealthReloadState.LIMIT_REACHED, healthReloadStateFrom(429, ""))
+        assertEquals(
+            HealthReloadState.LIMIT_REACHED,
+            healthReloadStateFrom(200, """{"message":"Daily reload limit exceeded"}"""),
+        )
+        assertEquals(HealthReloadState.UNAVAILABLE, healthReloadStateFrom(400, ""))
+        assertEquals(HealthReloadState.UNAVAILABLE, healthReloadStateFrom(500, ""))
     }
 
     @Test

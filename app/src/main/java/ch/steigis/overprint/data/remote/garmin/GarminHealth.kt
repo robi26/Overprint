@@ -1,6 +1,8 @@
 package ch.steigis.overprint.data.remote.garmin
 
 import ch.steigis.overprint.domain.model.DailyHealth
+import ch.steigis.overprint.domain.model.HealthChartReload
+import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.HealthSeries
 import kotlinx.serialization.json.Json
@@ -30,12 +32,126 @@ internal fun healthSeriesToDownload(
     return HealthSeries.entries.filterNot { it in stored }.toSet()
 }
 
+/**
+ * Garmin keeps the daily detail charts of recent days online and offloads older ones.
+ * A day at least this old can be missing its curves purely because it was offloaded.
+ */
+internal const val HEALTH_RELOAD_MIN_AGE_DAYS = 1
+
+/** Garmin promises the reloaded charts "within minutes"; stop waiting after this. */
+internal const val HEALTH_RELOAD_READY_MINUTES = 10L
+
+/** Garmin caps reloads per 24 hours and lifts the cap after that. */
+internal const val HEALTH_RELOAD_LIMIT_HOURS = 24L
+
+/**
+ * How long to wait between re-checks after requesting a reload. The whole schedule has to fit
+ * inside [HEALTH_RELOAD_READY_MINUTES], so the last check still lands while the day counts as
+ * waiting rather than as ready to be asked for again.
+ */
+internal val HEALTH_RELOAD_POLL_DELAYS_MILLIS = listOf(30_000L, 60_000L, 120_000L, 240_000L)
+
+/** What the Health screen can offer for one day's missing detail charts. */
+enum class HealthReloadAction {
+    /** Charts are present, or the day is too recent to have been offloaded. */
+    NONE,
+
+    /** Ask Garmin to reload this day. */
+    REQUEST,
+
+    /** A reload is queued and Garmin is still preparing it. */
+    WAIT,
+
+    /** The 24-hour reload quota is used up. */
+    BLOCKED,
+}
+
+/**
+ * Reading of a stored reload row for the day being shown. [hasSamples] is what is already
+ * in the database, so a day whose curves were downloaded never offers a reload again.
+ */
+internal fun healthReloadAction(
+    reload: HealthChartReload?,
+    hasSamples: Boolean,
+    date: LocalDate,
+    today: LocalDate = LocalDate.now(),
+    nowMillis: Long = System.currentTimeMillis(),
+): HealthReloadAction {
+    if (hasSamples) return HealthReloadAction.NONE
+    if (!healthReloadEligible(date, today)) return HealthReloadAction.NONE
+    return when (reload?.state) {
+        HealthReloadState.REQUESTED ->
+            if (nowMillis - reload.requestedAtMillis < HEALTH_RELOAD_READY_MINUTES * 60_000L) {
+                HealthReloadAction.WAIT
+            } else {
+                HealthReloadAction.REQUEST
+            }
+        HealthReloadState.LIMIT_REACHED ->
+            if (nowMillis - reload.requestedAtMillis < HEALTH_RELOAD_LIMIT_HOURS * 3_600_000L) {
+                HealthReloadAction.BLOCKED
+            } else {
+                HealthReloadAction.REQUEST
+            }
+        else -> HealthReloadAction.REQUEST
+    }
+}
+
+/** Today's charts are still online, and a future day has nothing to reload. */
+internal fun healthReloadEligible(date: LocalDate, today: LocalDate = LocalDate.now()): Boolean =
+    !date.isAfter(today.minusDays(HEALTH_RELOAD_MIN_AGE_DAYS.toLong()))
+
+/**
+ * Garmin does not document the reload endpoint, so read the outcome defensively:
+ * anything 2xx means queued, an explicit rate limit means the daily cap is spent,
+ * and everything else means Garmin will not reload that day right now.
+ */
+internal fun healthReloadStateFrom(httpCode: Int, body: String): HealthReloadState = when {
+    httpCode == 429 -> HealthReloadState.LIMIT_REACHED
+    httpCode == 409 -> HealthReloadState.REQUESTED
+    httpCode in 200..299 && healthReloadBodyRefusesQuota(body) -> HealthReloadState.LIMIT_REACHED
+    httpCode in 200..299 -> HealthReloadState.REQUESTED
+    else -> HealthReloadState.UNAVAILABLE
+}
+
+/** Garmin sometimes answers 200 with a message that the reload quota is gone. */
+private fun healthReloadBodyRefusesQuota(body: String): Boolean {
+    val text = body.lowercase()
+    if (text.isBlank()) return false
+    return ("limit" in text || "quota" in text || "exceed" in text) &&
+        ("reload" in text || "request" in text || "epoch" in text || "daily" in text)
+}
+
+internal fun healthReloadMessage(state: HealthReloadState): String = when (state) {
+    HealthReloadState.REQUESTED ->
+        "Garmin is preparing this day's charts. That usually takes a few minutes."
+    HealthReloadState.LIMIT_REACHED ->
+        "Garmin's daily chart-reload limit is used up. It resets 24 hours after the last reload."
+    HealthReloadState.UNAVAILABLE ->
+        "Garmin would not reload this day. It may have no detail charts recorded."
+    HealthReloadState.OFFLOADED ->
+        "Garmin has offloaded this day's detail charts. Reload them to see the graphs."
+    HealthReloadState.LOADED ->
+        "Detail charts stored."
+}
+
 internal fun healthRecentRange(today: LocalDate = LocalDate.now()): Pair<LocalDate, LocalDate> =
     today.minusDays((HEALTH_RECENT_DAYS - 1).toLong()) to today
 
-/** Next older 90-day window. Automatic sync never uses this; Health screen does. */
-internal fun healthHistoryRange(oldestStored: String?, today: LocalDate = LocalDate.now()): Pair<LocalDate, LocalDate> {
-    val end = oldestStored?.let { LocalDate.parse(it).minusDays(1) }
+/**
+ * Next older 90-day window. Automatic sync never uses this; Health screen does.
+ *
+ * [oldestAttempted] is how far back the walk has already asked, which matters because Garmin
+ * answers a window before the user owned a watch with nothing at all: without it the walk
+ * would keep re-fetching the same empty window instead of reaching further back.
+ */
+internal fun healthHistoryRange(
+    oldestStored: String?,
+    oldestAttempted: String? = null,
+    today: LocalDate = LocalDate.now(),
+): Pair<LocalDate, LocalDate> {
+    val anchors = listOfNotNull(oldestStored, oldestAttempted?.takeIf { it.isNotBlank() })
+        .mapNotNull { runCatching { LocalDate.parse(it) }.getOrNull() }
+    val end = anchors.minOrNull()?.minusDays(1)
         ?: today.minusDays(HEALTH_RECENT_DAYS.toLong())
     val start = end.minusDays((HEALTH_HISTORY_DAYS - 1).toLong())
     return start to end

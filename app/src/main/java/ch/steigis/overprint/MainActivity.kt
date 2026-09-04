@@ -301,9 +301,15 @@ private fun OverprintNav(
                     summaryLoading = state.healthSummaryLoading,
                     healthDate = state.healthDate,
                     garminSync = state.garminSync,
+                    reloads = state.healthReloads,
+                    reloadPending = state.healthReloadPending,
+                    reloadStatus = state.healthReloadStatus,
+                    canReload = state.settings.hasGarminCredentials,
                     fmt = state.fmt,
                     onLoadSamples = viewModel::loadHealthSamples,
                     onHealthDate = viewModel::setHealthDate,
+                    onReloadCharts = viewModel::reloadHealthCharts,
+                    onCheckCharts = viewModel::checkHealthCharts,
                 )
             }
             composable("heatmap") {

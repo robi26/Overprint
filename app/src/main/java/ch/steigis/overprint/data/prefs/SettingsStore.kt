@@ -29,6 +29,11 @@ data class AppSettings(
     val maxHeartRate: Double = 190.0,
     val ftpWatts: Double = 250.0,
     val themeMode: String = THEME_SYSTEM,
+    /**
+     * Oldest day the Health history walk has already asked Garmin for. Kept apart from the
+     * oldest stored day so a window Garmin answers with nothing still moves the walk back.
+     */
+    val healthHistoryOldest: String = "",
 ) {
     val hasGarminCredentials: Boolean
         get() = garminUsername.isNotBlank() && garminPassword.isNotBlank()
@@ -40,7 +45,8 @@ data class AppSettings(
     override fun toString(): String = "AppSettings(metric=$metric, demoLoaded=$demoLoaded, " +
         "garminEnabled=$garminEnabled, garminUsername=${mask(garminUsername)}, " +
         "garminPassword=${mask(garminPassword)}, garminToken=${mask(garminToken)}, " +
-        "maxHeartRate=$maxHeartRate, ftpWatts=$ftpWatts, themeMode=$themeMode)"
+        "maxHeartRate=$maxHeartRate, ftpWatts=$ftpWatts, themeMode=$themeMode, " +
+        "healthHistoryOldest=$healthHistoryOldest)"
 
     private fun mask(value: String) = if (value.isBlank()) "<unset>" else "<set>"
 
@@ -88,6 +94,7 @@ class SettingsStore(private val context: Context) {
             prefs[Keys.MAX_HR] = next.maxHeartRate
             prefs[Keys.FTP] = next.ftpWatts
             prefs[Keys.THEME] = next.themeMode
+            prefs[Keys.HEALTH_HISTORY_OLDEST] = next.healthHistoryOldest
         }
     }
 
@@ -115,6 +122,7 @@ class SettingsStore(private val context: Context) {
         maxHeartRate = this[Keys.MAX_HR] ?: 190.0,
         ftpWatts = this[Keys.FTP] ?: 250.0,
         themeMode = this[Keys.THEME] ?: AppSettings.THEME_SYSTEM,
+        healthHistoryOldest = this[Keys.HEALTH_HISTORY_OLDEST] ?: "",
     )
 
     internal object Keys {
@@ -127,6 +135,7 @@ class SettingsStore(private val context: Context) {
         val MAX_HR = doublePreferencesKey("max_hr")
         val FTP = doublePreferencesKey("ftp")
         val THEME = stringPreferencesKey("theme_mode")
+        val HEALTH_HISTORY_OLDEST = stringPreferencesKey("health_history_oldest")
     }
 }
 
