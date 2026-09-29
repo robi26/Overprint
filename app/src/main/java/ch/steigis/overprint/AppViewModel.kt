@@ -1,11 +1,15 @@
 package ch.steigis.overprint
 
+import android.net.Uri
+import android.provider.DocumentsContract
+import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,7 +65,11 @@ data class UiState(
     val healthReloads: Map<String, HealthChartReload> = emptyMap(),
     val healthReloadPending: String? = null,
     val healthReloadStatus: String? = null,
+    val actionError: ActionError? = null,
 )
+
+/** A failed action on the open activity, shown as a dialog. */
+data class ActionError(val title: String, val message: String)
 
 class AppViewModel(
     private val repo: ActivityRepository,
@@ -165,6 +173,66 @@ class AppViewModel(
             repo.markDeleted(id)
             _state.update { it.copy(selected = null, status = "Activity removed") }
         }
+    }
+
+    /** Downloads the open activity from Garmin again; the detail refreshes when it is stored. */
+    fun resyncActivity(id: String) {
+        runGarminAction("Re-sync failed", "Re-syncing activity…") {
+            val detail = repo.resyncGarminActivity(id) { update -> _state.update { it.copy(garminSync = update) } }
+            _state.update { st ->
+                st.copy(
+                    selected = if (st.selected?.activity?.id == id) detail else st.selected,
+                    status = "Re-synced ${detail.activity.name}",
+                )
+            }
+        }
+    }
+
+    /** Fetches the activity's original FIT file from Garmin and writes it to [target]. */
+    fun exportFit(id: String, target: Uri) {
+        val app = OverprintApp.instance
+        runGarminAction("Download failed", "Downloading FIT file…", onFailure = {
+            runCatching { DocumentsContract.deleteDocument(app.contentResolver, target) }
+        }) {
+            val bytes = repo.garminFitFile(id) { update -> _state.update { it.copy(garminSync = update) } }
+            withContext(Dispatchers.IO) {
+                app.contentResolver.openOutputStream(target)?.use { it.write(bytes) }
+                    ?: error("Could not open the chosen file")
+            }
+            Toast.makeText(app, "FIT file saved", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Runs a Garmin request for the open activity in the shared sync slot, so a full sync can't overlap. */
+    private fun runGarminAction(
+        failureTitle: String,
+        startMessage: String,
+        onFailure: suspend () -> Unit = {},
+        block: suspend () -> Unit,
+    ) {
+        // Claim the slot before suspending, so a double tap cannot start two requests.
+        if (_state.value.garminSync.running) return
+        _state.update {
+            it.copy(actionError = null, garminSync = GarminSyncProgress(running = true, message = startMessage))
+        }
+        viewModelScope.launch {
+            syncWakeLock.acquire()
+            try {
+                runCatching { block() }.onFailure { err ->
+                    // Clean up even when cancelled, so an export never leaves a half-written file.
+                    withContext(NonCancellable + Dispatchers.IO) { onFailure() }
+                    if (err is CancellationException) throw err
+                    _state.update { it.copy(actionError = ActionError(failureTitle, err.message ?: failureTitle)) }
+                }
+            } finally {
+                syncWakeLock.release()
+                _state.update { it.copy(garminSync = GarminSyncProgress()) }
+            }
+        }
+    }
+
+    fun dismissActionError() {
+        _state.update { it.copy(actionError = null) }
     }
 
     fun restoreDeleted(id: String) {

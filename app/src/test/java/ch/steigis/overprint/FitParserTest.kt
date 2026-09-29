@@ -1,6 +1,8 @@
 package ch.steigis.overprint
 
 import ch.steigis.overprint.data.parse.FitParser
+import ch.steigis.overprint.domain.model.DeviceConnection
+import ch.steigis.overprint.domain.model.SplitKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -106,6 +108,7 @@ class FitParserTest {
                     Field(83, 2, 4),
                     Field(85, 2, 4),
                     Field(108, 2, 4),
+                    Field(84, 2, 4),
                 ),
             )
             data(0) {
@@ -117,6 +120,7 @@ class FitParserTest {
                 u16(850)
                 u16(11200)
                 u16(2450)
+                u16(4950)
             }
             data(0) {
                 u32(start + 10)
@@ -127,6 +131,7 @@ class FitParserTest {
                 u16(820)
                 u16(11000)
                 u16(2500)
+                u16(5080)
             }
             definition(
                 local = 1,
@@ -173,6 +178,8 @@ class FitParserTest {
         assertEquals(8.5, detail.track[0].verticalRatio!!, 0.01)
         assertEquals(1120.0, detail.track[0].stepLengthMm!!, 0.01)
         assertEquals(24.5, detail.track[0].respirationRate!!, 0.01)
+        assertEquals(49.5, detail.track[0].stanceTimeBalancePercent!!, 0.01)
+        assertEquals(50.8, detail.track[1].stanceTimeBalancePercent!!, 0.01)
         assertEquals(185.0, detail.activity.maxCadence)
         assertEquals(42.0, detail.activity.elevationLossMeters)
         assertEquals(3.2, detail.activity.aerobicTrainingEffect!!, 0.01)
@@ -182,6 +189,134 @@ class FitParserTest {
         assertEquals(0.85, detail.activity.intensityFactor!!, 0.01)
         assertEquals(18.0, detail.activity.avgTemperatureC)
         assertEquals(120.0, detail.activity.minHeartRate)
+        assertEquals("Forerunner 965", detail.activity.deviceName)
+    }
+
+    @Test
+    fun deviceSplitsKeepRunWalkAndClimbs() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(3, 1, 2), Field(5, 4, 6)))
+            (0..6).forEach { i ->
+                data(0) {
+                    u32(start + i * 10)
+                    u8(140 + i)
+                    u32(i * 400L)
+                }
+            }
+            definition(
+                local = 1,
+                global = 312,
+                fields = listOf(
+                    Field(253, 4, 6), Field(0, 1, 0), Field(1, 4, 6), Field(3, 4, 6), Field(9, 4, 6), Field(13, 2, 4),
+                ),
+            )
+            data(1) { u32(start + 30); u8(17); u32(30_000); u32(12_000); u32(start); u16(5) }
+            data(1) { u32(start + 60); u8(18); u32(30_000); u32(3_000); u32(start + 30); u16(0xFFFF) }
+            data(1) { u32(start + 60); u8(9); u32(60_000); u32(15_000); u32(start); u16(12) }
+            data(1) { u32(start + 60); u8(10); u32(10_000); u32(1_000); u32(start); u16(0) }
+        }
+        val detail = FitParser.parse(bytes, "t")
+        val splits = detail.splits
+        assertEquals(listOf(SplitKind.RUN, SplitKind.CLIMB, SplitKind.WALK), splits.map { it.kind })
+        val run = splits[0]
+        assertEquals(detail.track[0].timestampMillis, run.startTimeMillis)
+        assertEquals(30.0, run.durationSeconds, 0.01)
+        assertEquals(120.0, run.distanceMeters!!, 0.01)
+        assertEquals(5.0, run.ascentMeters!!, 0.01)
+        assertEquals(4.0, run.avgSpeedMps!!, 0.01)
+        assertEquals(141.0, run.avgHeartRate!!, 0.01)
+        val walk = splits[2]
+        assertEquals(30.0, walk.distanceMeters!!, 0.01)
+        assertEquals(144.0, walk.avgHeartRate!!, 0.01)
+        assertEquals(null, walk.ascentMeters)
+        assertEquals(12.0, splits[1].ascentMeters!!, 0.01)
+    }
+
+    @Test
+    fun riderPositionEventsBecomeSeatedAndStandingSplits() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(7, 2, 4), Field(5, 4, 6)))
+            (0..6).forEach { i ->
+                data(0) {
+                    u32(start + i * 10)
+                    u16(if (i in 2..3) 400 else 200)
+                    u32(i * 10_000L)
+                }
+            }
+            definition(local = 1, global = 21, fields = listOf(Field(253, 4, 6), Field(0, 1, 0), Field(1, 1, 0), Field(3, 4, 6)))
+            data(1) { u32(start); u8(0); u8(0); u32(0) }
+            data(1) { u32(start); u8(44); u8(3); u32(0) }
+            data(1) { u32(start + 20); u8(44); u8(3); u32(1) }
+            data(1) { u32(start + 40); u8(44); u8(3); u32(0) }
+        }
+        val splits = FitParser.parse(bytes, "t").splits
+        assertEquals(listOf(SplitKind.SEATED, SplitKind.STANDING, SplitKind.SEATED), splits.map { it.kind })
+        assertEquals(listOf(20.0, 20.0, 20.0), splits.map { it.durationSeconds })
+        assertEquals(200.0, splits[0].avgPower!!, 0.01)
+        assertEquals(400.0, splits[1].avgPower!!, 0.01)
+        assertEquals(200.0, splits[2].avgPower!!, 0.01)
+        // 100 m per 10 s: each 20 s stretch covers 200 m, including the last one ending on the final record.
+        assertEquals(listOf(200.0, 200.0, 200.0), splits.map { it.distanceMeters })
+    }
+
+    @Test
+    fun splitDistanceInterpolatesBetweenSamples() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(5, 4, 6)))
+            (0..6).forEach { i ->
+                data(0) {
+                    u32(start + i * 10)
+                    u32(i * 10_000L)
+                }
+            }
+            definition(local = 1, global = 312, fields = listOf(Field(253, 4, 6), Field(0, 1, 0), Field(1, 4, 6), Field(9, 4, 6)))
+            data(1) { u32(start + 40); u8(18); u32(20_000); u32(start + 15) }
+        }
+        val walk = FitParser.parse(bytes, "t").splits.single()
+        assertEquals(200.0, walk.distanceMeters!!, 0.01)
+    }
+
+    @Test
+    fun deviceInfoListsRecorderAndSensors() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 0, fields = listOf(Field(1, 2, 4), Field(2, 2, 4), Field(3, 4, 12)))
+            data(0) { u16(1); u16(4315); u32(3_900_000_001L) }
+            definition(local = 1, global = 20, fields = listOf(Field(253, 4, 6), Field(3, 1, 2)))
+            data(1) { u32(start); u8(140) }
+            data(1) { u32(start + 10); u8(150) }
+            definition(
+                local = 2,
+                global = 23,
+                fields = listOf(
+                    Field(253, 4, 6), Field(0, 1, 2), Field(1, 1, 2), Field(2, 2, 4), Field(3, 4, 12),
+                    Field(4, 2, 4), Field(5, 2, 4), Field(11, 1, 2), Field(25, 1, 0), Field(32, 1, 2),
+                ),
+            )
+            // recorder, ANT+ HRM-Pro, BLE Stryd footpod, built-in wrist HR, then the HRM again at the end
+            data(2) { u32(start); u8(0); u8(0xFF); u16(1); u32(3_900_000_001L); u16(4315); u16(2226); u8(0xFF); u8(5); u8(0xFF) }
+            data(2) { u32(start); u8(1); u8(120); u16(1); u32(12_345); u16(3300); u16(420); u8(2); u8(1); u8(0xFF) }
+            data(2) { u32(start); u8(2); u8(6); u16(95); u32(0); u16(0xFFFF); u16(0xFFFF); u8(0xFF); u8(3); u8(0xFF) }
+            data(2) { u32(start); u8(3); u8(10); u16(1); u32(0); u16(4315); u16(0xFFFF); u8(0xFF); u8(5); u8(0xFF) }
+            data(2) { u32(start + 10); u8(1); u8(120); u16(1); u32(12_345); u16(3300); u16(420); u8(4); u8(1); u8(70) }
+        }
+        val detail = FitParser.parse(bytes, "t")
+        val devices = detail.devices
+        assertEquals(listOf("Forerunner 965", "HRM-Pro", "Stryd footpod", "Wrist heart rate"), devices.map { it.name })
+        assertEquals(
+            listOf(DeviceConnection.RECORDER, DeviceConnection.ANT, DeviceConnection.BLUETOOTH, DeviceConnection.BUILT_IN),
+            devices.map { it.connection },
+        )
+        assertEquals("22.26", devices[0].softwareVersion)
+        assertEquals(3_900_000_001L, devices[0].serialNumber)
+        val hrm = devices[1]
+        assertEquals("Heart rate monitor", hrm.kind)
+        assertEquals("low", hrm.batteryStatus)
+        assertEquals(70, hrm.batteryPercent)
+        assertEquals(12_345L, hrm.serialNumber)
         assertEquals("Forerunner 965", detail.activity.deviceName)
     }
 }

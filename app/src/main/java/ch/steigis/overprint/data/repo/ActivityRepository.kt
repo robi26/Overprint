@@ -3,9 +3,11 @@ package ch.steigis.overprint.data.repo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import ch.steigis.overprint.data.local.ActivityDeviceEntity
 import ch.steigis.overprint.data.local.ActivityEntity
 import ch.steigis.overprint.data.local.AppDatabase
 import ch.steigis.overprint.data.local.LapEntity
+import ch.steigis.overprint.data.local.SplitEntity
 import ch.steigis.overprint.data.local.TrackPointEntity
 import ch.steigis.overprint.data.local.toEntity
 import ch.steigis.overprint.data.local.toModel
@@ -27,16 +29,20 @@ import ch.steigis.overprint.data.remote.garmin.healthSeriesToDownload
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
+import ch.steigis.overprint.domain.model.ActivityDevice
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.HealthChartReload
 import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.DataSource
+import ch.steigis.overprint.domain.model.DeviceConnection
 import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.GeoPoint
 import ch.steigis.overprint.domain.model.GpsTrack
 import ch.steigis.overprint.domain.model.Lap
+import ch.steigis.overprint.domain.model.Split
+import ch.steigis.overprint.domain.model.SplitKind
 import ch.steigis.overprint.domain.model.TrackPoint
 import ch.steigis.overprint.domain.stats.sanitizeActivity
 import ch.steigis.overprint.domain.stats.sanitizeFitUnits
@@ -201,7 +207,9 @@ class ActivityRepository(
         val entity = db.activities().byId(id) ?: return null
         val track = withNormalizedElapsed(sanitizeFitUnits(db.tracks().forActivity(id).map { it.toModel() }))
         val laps = db.laps().forActivity(id).map { it.toModel() }
-        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps)
+        val splits = db.splits().forActivity(id).mapNotNull { it.toModel() }
+        val devices = db.devices().forActivity(id).map { it.toModel() }
+        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps, splits, devices)
     }
 
     suspend fun gpsTracks(
@@ -446,6 +454,54 @@ class ActivityRepository(
     }
 
     /**
+     * Downloads one Garmin activity's FIT file again and replaces its track, laps and splits,
+     * so data the parser has learned to read since the first sync shows up. Name, location and
+     * notes stay as they are.
+     */
+    suspend fun resyncGarminActivity(id: String, progress: (GarminSyncProgress) -> Unit = {}): ActivityDetail {
+        val (existing, client) = garminClientFor(id, progress)
+        progress(GarminSyncProgress(running = true, message = "Downloading ${existing.name}"))
+        val fresh = client.downloadFit(existing.externalId)
+        save(
+            ActivityDetail(
+                activity = fresh.activity.withListExtras(existing).copy(
+                    id = existing.id,
+                    name = existing.name,
+                    location = existing.location ?: fresh.activity.location,
+                    notes = existing.notes,
+                ),
+                track = fresh.track.map { it.copy(activityId = existing.id) },
+                laps = fresh.laps.map { it.copy(activityId = existing.id) },
+                splits = fresh.splits.map { it.copy(activityId = existing.id) },
+                devices = fresh.devices.map { it.copy(activityId = existing.id) },
+            ),
+        )
+        return get(id) ?: error("Activity not found")
+    }
+
+    /** The original FIT file of a Garmin activity, straight from Garmin Connect. */
+    suspend fun garminFitFile(id: String, progress: (GarminSyncProgress) -> Unit = {}): ByteArray {
+        val (existing, client) = garminClientFor(id, progress)
+        progress(GarminSyncProgress(running = true, message = "Downloading FIT file"))
+        return client.downloadFitBytes(existing.externalId)
+    }
+
+    private suspend fun garminClientFor(
+        id: String,
+        progress: (GarminSyncProgress) -> Unit,
+    ): Pair<Activity, GarminClient> {
+        val existing = db.activities().byId(id)?.toModel() ?: error("Activity not found")
+        if (existing.source != DataSource.GARMIN) error("Only activities downloaded from Garmin are available there")
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) {
+            error("Enter your Garmin Connect email and password in Settings")
+        }
+        val client = GarminClient()
+        authenticate(client, prefs, progress)
+        return existing to client
+    }
+
+    /**
      * Prefer the stored DI session so the password is sent to Garmin only when there is
      * no usable access or refresh token left. A rejected session is dropped before SSO.
      */
@@ -484,6 +540,8 @@ class ActivityRepository(
             activity = detail.activity.copy(deleted = false).toEntity(),
             track = detail.track.map { it.toEntity() },
             laps = detail.laps.map { it.toEntity() },
+            splits = detail.splits.map { it.toEntity() },
+            devices = detail.devices.mapIndexed { i, d -> d.toEntity(i) },
         )
     }
 
@@ -503,6 +561,8 @@ class ActivityRepository(
     suspend fun delete(id: String) {
         db.tracks().deleteFor(id)
         db.laps().deleteFor(id)
+        db.splits().deleteFor(id)
+        db.devices().deleteFor(id)
         db.activities().delete(id)
     }
 }
@@ -540,7 +600,7 @@ private fun TrackPointEntity.toModel() = TrackPoint(
     activityId, timestampMillis, elapsedSeconds, latitude, longitude, altitudeMeters,
     distanceMeters, speedMps, heartRate, cadence, power, gradePercent, temperatureC,
     verticalOscillationMm, stanceTimeMs, verticalRatio, stepLengthMm, leftRightBalancePercent,
-    respirationRate,
+    respirationRate, stanceTimeBalancePercent,
 )
 
 private fun TrackPoint.toEntity() = TrackPointEntity(
@@ -563,6 +623,58 @@ private fun TrackPoint.toEntity() = TrackPointEntity(
     stepLengthMm = stepLengthMm,
     leftRightBalancePercent = leftRightBalancePercent,
     respirationRate = respirationRate,
+    stanceTimeBalancePercent = stanceTimeBalancePercent,
+)
+
+private fun SplitEntity.toModel(): Split? = SplitKind.fromKey(kind)?.let { k ->
+    Split(
+        activityId, k, startTimeMillis, durationSeconds, movingSeconds, distanceMeters, ascentMeters,
+        descentMeters, avgHeartRate, maxHeartRate, avgSpeedMps, avgCadence, avgPower, avgGradePercent,
+    )
+}
+
+private fun Split.toEntity() = SplitEntity(
+    activityId = activityId,
+    kind = kind.key,
+    startTimeMillis = startTimeMillis,
+    durationSeconds = durationSeconds,
+    movingSeconds = movingSeconds,
+    distanceMeters = distanceMeters,
+    ascentMeters = ascentMeters,
+    descentMeters = descentMeters,
+    avgHeartRate = avgHeartRate,
+    maxHeartRate = maxHeartRate,
+    avgSpeedMps = avgSpeedMps,
+    avgCadence = avgCadence,
+    avgPower = avgPower,
+    avgGradePercent = avgGradePercent,
+)
+
+private fun ActivityDeviceEntity.toModel() = ActivityDevice(
+    activityId = activityId,
+    name = name,
+    connection = DeviceConnection.fromKey(connection),
+    manufacturer = manufacturer,
+    kind = kind,
+    serialNumber = serialNumber,
+    softwareVersion = softwareVersion,
+    batteryStatus = batteryStatus,
+    batteryPercent = batteryPercent,
+    batteryVoltage = batteryVoltage,
+)
+
+private fun ActivityDevice.toEntity(position: Int) = ActivityDeviceEntity(
+    activityId = activityId,
+    position = position,
+    name = name,
+    connection = connection.key,
+    manufacturer = manufacturer,
+    kind = kind,
+    serialNumber = serialNumber,
+    softwareVersion = softwareVersion,
+    batteryStatus = batteryStatus,
+    batteryPercent = batteryPercent,
+    batteryVoltage = batteryVoltage,
 )
 
 private fun LapEntity.toModel() = sanitizeLap(

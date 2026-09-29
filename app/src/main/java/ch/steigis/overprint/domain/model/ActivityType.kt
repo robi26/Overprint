@@ -65,6 +65,7 @@ fun MapMetric.shortTitle(): String = when (this) {
 enum class ChartMetric {
     HEART_RATE, PACE, SPEED, POWER, CADENCE, ELEVATION, GRADE,
     TEMPERATURE, RESPIRATION, STEP_LENGTH, VERTICAL_OSC, GROUND_CONTACT, VERTICAL_RATIO, BALANCE,
+    GCT_BALANCE,
 }
 
 val ChartMetric.isCore: Boolean
@@ -87,6 +88,7 @@ fun ChartMetric.title(): String = when (this) {
     ChartMetric.GROUND_CONTACT -> "Ground contact"
     ChartMetric.VERTICAL_RATIO -> "Vertical ratio"
     ChartMetric.BALANCE -> "L/R balance"
+    ChartMetric.GCT_BALANCE -> "GCT balance"
 }
 
 fun ChartMetric.shortTitle(): String = when (this) {
@@ -104,6 +106,7 @@ fun ChartMetric.shortTitle(): String = when (this) {
     ChartMetric.GROUND_CONTACT -> "GCT"
     ChartMetric.VERTICAL_RATIO -> "VR"
     ChartMetric.BALANCE -> "L/R"
+    ChartMetric.GCT_BALANCE -> "GCT bal"
 }
 
 fun ChartMetric.unit(metric: Boolean = true): String = when (this) {
@@ -120,6 +123,7 @@ fun ChartMetric.unit(metric: Boolean = true): String = when (this) {
     ChartMetric.VERTICAL_OSC -> "mm"
     ChartMetric.GROUND_CONTACT -> "ms"
     ChartMetric.BALANCE -> "% R"
+    ChartMetric.GCT_BALANCE -> "% L"
 }
 
 fun TrackPoint.chartValue(metric: ChartMetric, metricUnits: Boolean = true): Double? = when (metric) {
@@ -146,6 +150,7 @@ fun TrackPoint.chartValue(metric: ChartMetric, metricUnits: Boolean = true): Dou
     ChartMetric.GROUND_CONTACT -> stanceTimeMs
     ChartMetric.VERTICAL_RATIO -> verticalRatio
     ChartMetric.BALANCE -> leftRightBalancePercent
+    ChartMetric.GCT_BALANCE -> stanceTimeBalancePercent
 }
 
 fun formatChartValue(metric: ChartMetric, value: Double): String = when (metric) {
@@ -157,7 +162,7 @@ fun formatChartValue(metric: ChartMetric, value: Double): String = when (metric)
     ChartMetric.RESPIRATION, ChartMetric.VERTICAL_OSC, ChartMetric.GROUND_CONTACT ->
         String.format(java.util.Locale.US, "%.0f", value)
     ChartMetric.SPEED, ChartMetric.GRADE, ChartMetric.TEMPERATURE, ChartMetric.VERTICAL_RATIO,
-    ChartMetric.BALANCE ->
+    ChartMetric.BALANCE, ChartMetric.GCT_BALANCE ->
         String.format(java.util.Locale.US, "%.1f", value)
     ChartMetric.STEP_LENGTH ->
         String.format(java.util.Locale.US, "%.2f", value)

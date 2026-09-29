@@ -2,9 +2,13 @@ package ch.steigis.overprint.data.parse
 
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
+import ch.steigis.overprint.domain.model.ActivityDevice
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DataSource
+import ch.steigis.overprint.domain.model.DeviceConnection
 import ch.steigis.overprint.domain.model.Lap
+import ch.steigis.overprint.domain.model.Split
+import ch.steigis.overprint.domain.model.SplitKind
 import ch.steigis.overprint.domain.model.TrackPoint
 import ch.steigis.overprint.domain.stats.StatsEngine
 import ch.steigis.overprint.domain.stats.sanitizeActivity
@@ -17,7 +21,7 @@ import kotlin.math.pow
 
 /**
  * Decoder for Garmin FIT activity files. Covers the messages used for summaries:
- * file_id, session, lap, record, activity, event.
+ * file_id, device_info, session, lap, record, activity, event, split.
  */
 object FitParser {
 
@@ -120,6 +124,7 @@ object FitParser {
                 stepLengthMm = r.stepLengthMm,
                 leftRightBalancePercent = r.leftRightBalancePercent,
                 respirationRate = r.respirationRate,
+                stanceTimeBalancePercent = r.stanceTimeBalancePercent,
             )
         }.let { StatsEngine.enrichTrack(sanitizeFitUnits(it)) }
 
@@ -186,13 +191,226 @@ object FitParser {
             )
         }
 
+        val lastRecordTs = records.mapNotNull { it.timestamp }.maxOrNull()
+        val endMillis = lastRecordTs?.let(::fitTimestampToMillis)
+            ?: (startMillis + ((session.elapsed ?: 0.0) * 1000).toLong())
+        val splits = (deviceSplits(id, session.splits, track) + riderPositionSplits(id, session.riderPositions, track, endMillis))
+            .sortedBy { it.startTimeMillis }
+
         return ActivityDetail(
             sanitizeActivity(activity.copy(id = id, hasTrack = track.isNotEmpty()))
                 .let { it.copy(deviceName = it.deviceName ?: session.device) }
                 .withDerivedTrackStats(track),
             track.map { it.copy(activityId = id) },
             parsedLaps.map { sanitizeLap(it.copy(activityId = id)) },
+            splits,
+            activityDevices(id, session.devices.values),
         )
+    }
+
+    /** The recording device and the sensors it logged in device_info, recorder first. */
+    private fun activityDevices(id: String, raw: Collection<RawDevice>): List<ActivityDevice> =
+        raw.mapNotNull { d ->
+            val connection = when {
+                d.creator -> DeviceConnection.RECORDER
+                d.sourceType == 0 || d.sourceType == 1 -> DeviceConnection.ANT
+                d.sourceType == 2 || d.sourceType == 3 -> DeviceConnection.BLUETOOTH
+                d.sourceType == 5 -> DeviceConnection.BUILT_IN
+                else -> DeviceConnection.OTHER
+            }
+            val kind = deviceKind(d.sourceType, d.deviceType)
+            val manufacturer = d.manufacturer?.let(FitNames::manufacturer)
+            val product = d.name
+                ?: d.product?.takeIf { d.manufacturer in GARMIN_MANUFACTURERS }?.let(FitNames::garminProduct)
+            // Built-in sensors often carry the watch's own product id, so name them by what they measure.
+            val name = (if (connection == DeviceConnection.BUILT_IN) kind ?: product else product)
+                ?: listOfNotNull(manufacturer, kind?.lowercase()).joinToString(" ").takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            ActivityDevice(
+                activityId = id,
+                name = name,
+                connection = connection,
+                manufacturer = manufacturer,
+                kind = kind,
+                serialNumber = d.serial,
+                softwareVersion = d.software?.let { String.format(java.util.Locale.US, "%.2f", it) },
+                batteryStatus = when (d.batteryStatus) {
+                    1 -> "new"
+                    2 -> "good"
+                    3 -> "ok"
+                    4 -> "low"
+                    5 -> "critical"
+                    6 -> "charging"
+                    else -> null
+                },
+                batteryPercent = d.batteryLevel?.takeIf { it in 0..100 },
+                batteryVoltage = d.batteryVoltage,
+            )
+        }.sortedBy { it.connection.ordinal }
+
+    /** device_type is read through ant+/ble/local device type tables, picked by source_type. */
+    private fun deviceKind(sourceType: Int?, deviceType: Int?): String? = when (sourceType) {
+        0, 1 -> when (deviceType) {
+            11 -> "Power meter"
+            12, 25 -> "Environment sensor"
+            15 -> "Speed/distance sensor"
+            16 -> "Remote control"
+            17 -> "Fitness equipment"
+            27 -> "Control hub"
+            31 -> "Muscle oxygen sensor"
+            34 -> "Shifting"
+            35, 36 -> "Bike light"
+            38 -> "Display"
+            40 -> "Bike radar"
+            46 -> "Bike aero sensor"
+            119 -> "Weight scale"
+            120 -> "Heart rate monitor"
+            121 -> "Speed/cadence sensor"
+            122 -> "Cadence sensor"
+            123 -> "Speed sensor"
+            124 -> "Footpod"
+            else -> null
+        }
+        2, 3 -> when (deviceType) {
+            0 -> "Connected GPS"
+            1 -> "Heart rate monitor"
+            2 -> "Power meter"
+            3 -> "Speed/cadence sensor"
+            4 -> "Speed sensor"
+            5 -> "Cadence sensor"
+            6 -> "Footpod"
+            7 -> "Bike trainer"
+            else -> null
+        }
+        5 -> when (deviceType) {
+            0 -> "GPS"
+            1 -> "GLONASS"
+            2 -> "GPS/GLONASS"
+            3 -> "Accelerometer"
+            4 -> "Barometer"
+            5 -> "Temperature sensor"
+            10 -> "Wrist heart rate"
+            12 -> "Sensor hub"
+            else -> null
+        }
+        else -> null
+    }
+
+    /** Run/walk detection and ClimbPro splits the watch wrote as split messages. */
+    private fun deviceSplits(id: String, raw: List<RawSplit>, track: List<TrackPoint>): List<Split> =
+        raw.mapNotNull { r ->
+            val elapsed = r.elapsed?.takeIf { it > 0 } ?: return@mapNotNull null
+            val start = fitTimestampToMillis(r.start ?: return@mapNotNull null)
+            val window = WindowStats(track, start, start + (elapsed * 1000).toLong())
+            val moving = r.moving ?: r.timer
+            val distance = r.distance ?: window.distance
+            Split(
+                activityId = id,
+                kind = r.kind,
+                startTimeMillis = start,
+                durationSeconds = elapsed,
+                movingSeconds = moving,
+                distanceMeters = distance,
+                ascentMeters = r.ascent ?: window.ascent,
+                descentMeters = r.descent ?: window.descent,
+                avgHeartRate = r.avgHr ?: window.avgHr,
+                maxHeartRate = r.maxHr ?: window.maxHr,
+                avgSpeedMps = r.avgSpeed ?: distance?.let { it / (moving ?: elapsed) },
+                avgCadence = r.avgCadence ?: window.avgCadence,
+                avgPower = r.avgPower ?: window.avgPower,
+                avgGradePercent = r.avgGrade ?: window.grade,
+            )
+        }
+
+    /** Seated and standing stretches from rider_position_change events (cycling dynamics pedals). */
+    private fun riderPositionSplits(
+        id: String,
+        events: List<Pair<Long, Int>>,
+        track: List<TrackPoint>,
+        endMillis: Long,
+    ): List<Split> {
+        val changes = events.sortedBy { it.first }.mapNotNull { (ts, position) ->
+            val kind = when (position) {
+                0, 2 -> SplitKind.SEATED
+                1, 3 -> SplitKind.STANDING
+                else -> null
+            }
+            kind?.let { fitTimestampToMillis(ts) to it }
+        }
+        if (changes.none { it.second == SplitKind.STANDING }) return emptyList()
+        val segments = mutableListOf<Triple<SplitKind, Long, Long>>()
+        changes.forEachIndexed { i, (start, kind) ->
+            val end = changes.getOrNull(i + 1)?.first ?: endMillis
+            val last = segments.lastOrNull()
+            if (last != null && last.first == kind) {
+                segments[segments.lastIndex] = Triple(kind, last.second, end)
+            } else {
+                segments += Triple(kind, start, end)
+            }
+        }
+        return segments.filter { it.third - it.second >= 1000L }.map { (kind, start, end) ->
+            val window = WindowStats(track, start, end)
+            val seconds = (end - start) / 1000.0
+            Split(
+                activityId = id,
+                kind = kind,
+                startTimeMillis = start,
+                durationSeconds = seconds,
+                distanceMeters = window.distance,
+                ascentMeters = window.ascent,
+                descentMeters = window.descent,
+                avgHeartRate = window.avgHr,
+                maxHeartRate = window.maxHr,
+                avgSpeedMps = window.distance?.let { it / seconds },
+                avgCadence = window.avgCadence,
+                avgPower = window.avgPower,
+                avgGradePercent = window.grade,
+            )
+        }
+    }
+
+    /** Track statistics between two times, for split fields the file leaves out. */
+    private class WindowStats(track: List<TrackPoint>, startMillis: Long, endMillis: Long) {
+        /** Samples inside the split, end excluded so back-to-back splits don't share one; for averages. */
+        private val points = track.filter { it.timestampMillis >= startMillis && it.timestampMillis < endMillis }
+
+        /** The same stretch with both edges pinned to the split's own times; for distance and elevation deltas. */
+        private val span = listOfNotNull(edge(track, startMillis)) +
+            track.filter { it.timestampMillis > startMillis && it.timestampMillis < endMillis } +
+            listOfNotNull(edge(track, endMillis))
+
+        val distance: Double? = span.mapNotNull { it.distanceMeters }.let { d ->
+            if (d.size >= 2) (d.last() - d.first()).coerceAtLeast(0.0) else null
+        }
+        val ascent: Double? = if (span.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationGain(span) else null
+        val descent: Double? = if (span.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationLoss(span) else null
+        val avgHr: Double? = points.mapNotNull { it.heartRate }.averageOrNull()
+        val maxHr: Double? = points.mapNotNull { it.heartRate }.maxOrNull()
+        val avgCadence: Double? = points.mapNotNull { it.cadence?.takeIf { c -> c > 0 } }.averageOrNull()
+        val avgPower: Double? = points.mapNotNull { it.power }.averageOrNull()
+        val grade: Double? = run {
+            val alts = span.mapNotNull { it.altitudeMeters }
+            val dist = distance
+            if (alts.size >= 2 && dist != null && dist > 10.0) (alts.last() - alts.first()) / dist * 100.0 else null
+        }
+
+        private fun List<Double>.averageOrNull(): Double? = if (isEmpty()) null else average()
+
+        /** The track at [at]: the sample there, or distance and altitude interpolated between its neighbours. */
+        private fun edge(track: List<TrackPoint>, at: Long): TrackPoint? {
+            val next = track.indexOfFirst { it.timestampMillis >= at }
+            if (next < 0) return null
+            val after = track[next]
+            if (after.timestampMillis == at) return after
+            val before = track.getOrNull(next - 1) ?: return null
+            val f = (at - before.timestampMillis).toDouble() / (after.timestampMillis - before.timestampMillis)
+            fun lerp(a: Double?, b: Double?) = if (a != null && b != null) a + (b - a) * f else null
+            return after.copy(
+                timestampMillis = at,
+                distanceMeters = lerp(before.distanceMeters, after.distanceMeters),
+                altitudeMeters = lerp(before.altitudeMeters, after.altitudeMeters),
+            )
+        }
     }
 
     private fun ingest(
@@ -207,7 +425,30 @@ object FitParser {
         when (global) {
             0, 23 -> {
                 val index = values[0]
-                val name = fields.strings[27] ?: fields.strings[19]
+                val name = if (global == 0) fields.strings[8] else fields.strings[27] ?: fields.strings[19]
+                val creator = global == 0 || index == 0.0
+                val serial = values[3]?.toLong()?.takeIf { it > 0 }
+                val raw = RawDevice(
+                    creator = creator,
+                    sourceType = if (global == 23) values[25]?.toInt() else null,
+                    deviceType = if (global == 23) values[1]?.toInt() else null,
+                    manufacturer = values[if (global == 0) 1 else 2]?.toInt(),
+                    product = values[if (global == 0) 2 else 4]?.toInt(),
+                    serial = serial,
+                    name = name,
+                    software = if (global == 23) values[5]?.div(100.0) else null,
+                    batteryStatus = if (global == 23) values[11]?.toInt() else null,
+                    batteryLevel = if (global == 23) values[32]?.toInt() else null,
+                    batteryVoltage = if (global == 23) values[10]?.div(256.0) else null,
+                )
+                // Devices are logged again (e.g. at the end with battery state); merge per device.
+                val key = when {
+                    creator -> "creator"
+                    serial != null -> "serial:$serial"
+                    values[21] != null -> "ant:${values[21]?.toInt()}:${raw.deviceType}"
+                    else -> "device:${index?.toInt()}:${raw.sourceType}:${raw.deviceType}:${raw.manufacturer}:${raw.product}"
+                }
+                session.devices[key] = session.devices[key]?.merge(raw) ?: raw
                 val label = deviceLabel(
                     manufacturer = values[if (global == 0) 1 else 2]?.toInt(),
                     product = values[if (global == 0) 2 else 4]?.toInt(),
@@ -240,6 +481,7 @@ object FitParser {
                     stepLengthMm = values[85]?.div(10.0),
                     leftRightBalancePercent = leftRightBalancePercent(values[30] ?: values[54], scaled100 = false),
                     respirationRate = values[108]?.div(100.0) ?: values[99],
+                    stanceTimeBalancePercent = values[84]?.div(100.0)?.takeIf { it in 30.0..70.0 },
                 )
             }
             19 -> laps += RawLap(
@@ -283,6 +525,41 @@ object FitParser {
                 session.avgRespirationRate = values[169]?.div(100.0) ?: values[147] ?: session.avgRespirationRate
                 session.aerobicTe = values[24]?.div(10.0) ?: session.aerobicTe
                 session.anaerobicTe = values[137]?.div(10.0) ?: session.anaerobicTe
+            }
+            21 -> {
+                // event 44 = rider_position_change; data holds the rider_position_type.
+                val position = (values[3] ?: values[2])?.toInt()
+                if (values[0]?.toInt() == 44 && timestamp != null && position != null) {
+                    session.riderPositions += timestamp to position
+                }
+            }
+            312 -> {
+                val kind = when (values[0]?.toInt()) {
+                    17 -> SplitKind.RUN
+                    18 -> SplitKind.WALK
+                    22 -> SplitKind.IDLE
+                    9 -> SplitKind.CLIMB
+                    else -> null
+                }
+                if (kind != null) {
+                    val elapsed = values[1]?.div(1000.0)
+                    session.splits += RawSplit(
+                        kind = kind,
+                        start = values[9]?.toLong() ?: timestamp?.minus((elapsed ?: 0.0).toLong()),
+                        elapsed = elapsed,
+                        timer = values[2]?.div(1000.0),
+                        moving = values[110]?.div(1000.0),
+                        distance = values[3]?.div(100.0),
+                        avgSpeed = values[4]?.div(1000.0),
+                        ascent = values[13],
+                        descent = values[14],
+                        avgHr = values[15],
+                        maxHr = values[16],
+                        avgCadence = values[29]?.div(128.0),
+                        avgPower = values[40],
+                        avgGrade = values[88]?.div(100.0),
+                    )
+                }
             }
         }
     }
@@ -337,6 +614,11 @@ object FitParser {
             4 -> {
                 val v = buf.short.toInt() and 0xFFFF
                 invalid = 0xFFFF.toDouble()
+                v.toDouble()
+            }
+            11 -> { // uint16z
+                val v = buf.short.toInt() and 0xFFFF
+                invalid = 0.0
                 v.toDouble()
             }
             5 -> {
@@ -399,15 +681,13 @@ object FitParser {
 
     private fun deviceLabel(manufacturer: Int?, product: Int?, productName: String?): String? {
         productName?.takeIf { it.isNotBlank() }?.let { return it }
-        val mfr = when (manufacturer) {
-            1 -> "Garmin"
-            15 -> "Dynastream"
-            32 -> "Wahoo"
-            263 -> "Favero"
-            else -> null
-        } ?: return null
+        if (manufacturer in GARMIN_MANUFACTURERS && product != null) FitNames.garminProduct(product)?.let { return it }
+        val mfr = manufacturer?.let(FitNames::manufacturer) ?: return null
         return if (product != null) "$mfr $product" else mfr
     }
+
+    /** Garmin, Dynastream and Dynastream OEM share Garmin's product ids. */
+    private val GARMIN_MANUFACTURERS = setOf(1, 13, 15)
 
     private fun semicircles(v: Double?): Double? {
         v ?: return null
@@ -458,6 +738,7 @@ object FitParser {
         val stepLengthMm: Double? = null,
         val leftRightBalancePercent: Double? = null,
         val respirationRate: Double? = null,
+        val stanceTimeBalancePercent: Double? = null,
     )
     private data class RawLap(
         val start: Long?,
@@ -470,7 +751,54 @@ object FitParser {
         val avgPower: Double?,
         val elev: Double?,
     )
+    private data class RawSplit(
+        val kind: SplitKind,
+        val start: Long?,
+        val elapsed: Double?,
+        val timer: Double?,
+        val moving: Double?,
+        val distance: Double?,
+        val avgSpeed: Double?,
+        val ascent: Double?,
+        val descent: Double?,
+        val avgHr: Double?,
+        val maxHr: Double?,
+        val avgCadence: Double?,
+        val avgPower: Double?,
+        val avgGrade: Double?,
+    )
+    private data class RawDevice(
+        val creator: Boolean,
+        val sourceType: Int?,
+        val deviceType: Int?,
+        val manufacturer: Int?,
+        val product: Int?,
+        val serial: Long?,
+        val name: String?,
+        val software: Double?,
+        val batteryStatus: Int?,
+        val batteryLevel: Int?,
+        val batteryVoltage: Double?,
+    ) {
+        /** Later messages win where they have a value; battery readings are latest-first. */
+        fun merge(next: RawDevice) = RawDevice(
+            creator = creator || next.creator,
+            sourceType = next.sourceType ?: sourceType,
+            deviceType = next.deviceType ?: deviceType,
+            manufacturer = next.manufacturer ?: manufacturer,
+            product = next.product ?: product,
+            serial = next.serial ?: serial,
+            name = next.name ?: name,
+            software = next.software ?: software,
+            batteryStatus = next.batteryStatus ?: batteryStatus,
+            batteryLevel = next.batteryLevel ?: batteryLevel,
+            batteryVoltage = next.batteryVoltage ?: batteryVoltage,
+        )
+    }
     private class RawSession {
+        val devices = LinkedHashMap<String, RawDevice>()
+        val splits = mutableListOf<RawSplit>()
+        val riderPositions = mutableListOf<Pair<Long, Int>>()
         var startTime: Long? = null
         var sport: String? = null
         var elapsed: Double? = null

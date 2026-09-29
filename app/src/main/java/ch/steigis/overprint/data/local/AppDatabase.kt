@@ -83,6 +83,48 @@ data class TrackPointEntity(
     val stepLengthMm: Double? = null,
     val leftRightBalancePercent: Double? = null,
     val respirationRate: Double? = null,
+    val stanceTimeBalancePercent: Double? = null,
+)
+
+@Entity(
+    tableName = "splits",
+    indices = [Index("activityId")],
+)
+data class SplitEntity(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val activityId: String,
+    val kind: String,
+    val startTimeMillis: Long,
+    val durationSeconds: Double,
+    val movingSeconds: Double?,
+    val distanceMeters: Double?,
+    val ascentMeters: Double?,
+    val descentMeters: Double?,
+    val avgHeartRate: Double?,
+    val maxHeartRate: Double?,
+    val avgSpeedMps: Double?,
+    val avgCadence: Double?,
+    val avgPower: Double?,
+    val avgGradePercent: Double?,
+)
+
+@Entity(
+    tableName = "activity_devices",
+    indices = [Index("activityId")],
+)
+data class ActivityDeviceEntity(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val activityId: String,
+    val position: Int,
+    val name: String,
+    val connection: String,
+    val manufacturer: String?,
+    val kind: String?,
+    val serialNumber: Long?,
+    val softwareVersion: String?,
+    val batteryStatus: String?,
+    val batteryPercent: Int?,
+    val batteryVoltage: Double?,
 )
 
 @Entity(
@@ -200,29 +242,66 @@ interface LapDao {
     suspend fun clear(): Int
 }
 
+@Dao
+interface SplitDao {
+    @Query("SELECT * FROM splits WHERE activityId = :id ORDER BY startTimeMillis ASC")
+    suspend fun forActivity(id: String): List<SplitEntity>
+
+    @Insert
+    suspend fun insertAll(splits: List<SplitEntity>)
+
+    @Query("DELETE FROM splits WHERE activityId = :id")
+    suspend fun deleteFor(id: String): Int
+}
+
+@Dao
+interface ActivityDeviceDao {
+    @Query("SELECT * FROM activity_devices WHERE activityId = :id ORDER BY position ASC")
+    suspend fun forActivity(id: String): List<ActivityDeviceEntity>
+
+    @Insert
+    suspend fun insertAll(devices: List<ActivityDeviceEntity>)
+
+    @Query("DELETE FROM activity_devices WHERE activityId = :id")
+    suspend fun deleteFor(id: String): Int
+}
+
 @Database(
     entities = [
         ActivityEntity::class, TrackPointEntity::class, LapEntity::class,
         DailyHealthEntity::class, HealthSampleEntity::class, HealthReloadEntity::class,
+        SplitEntity::class, ActivityDeviceEntity::class,
     ],
-    version = 7,
+    version = 10,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun activities(): ActivityDao
     abstract fun tracks(): TrackDao
     abstract fun laps(): LapDao
+    abstract fun splits(): SplitDao
+    abstract fun devices(): ActivityDeviceDao
     abstract fun health(): DailyHealthDao
     abstract fun healthSamples(): HealthSampleDao
     abstract fun healthReloads(): HealthReloadDao
 
     @Transaction
-    suspend fun replaceDetail(activity: ActivityEntity, track: List<TrackPointEntity>, laps: List<LapEntity>) {
+    suspend fun replaceDetail(
+        activity: ActivityEntity,
+        track: List<TrackPointEntity>,
+        laps: List<LapEntity>,
+        splits: List<SplitEntity> = emptyList(),
+        devices: List<ActivityDeviceEntity> = emptyList(),
+    ) {
         activities().upsert(activity)
         tracks().deleteFor(activity.id)
         laps().deleteFor(activity.id)
+        splits().deleteFor(activity.id)
+        devices().deleteFor(activity.id)
         if (track.isNotEmpty()) tracks().insertAll(track)
         if (laps.isNotEmpty()) laps().insertAll(laps)
+        if (splits.isNotEmpty()) splits().insertAll(splits)
+        if (devices.isNotEmpty()) devices().insertAll(devices)
     }
 }
 
@@ -313,5 +392,62 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
             )
             """.trimIndent(),
         )
+    }
+}
+
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE track_points ADD COLUMN stanceTimeBalancePercent REAL")
+    }
+}
+
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS splits (
+                rowId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                activityId TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                startTimeMillis INTEGER NOT NULL,
+                durationSeconds REAL NOT NULL,
+                movingSeconds REAL,
+                distanceMeters REAL,
+                ascentMeters REAL,
+                descentMeters REAL,
+                avgHeartRate REAL,
+                maxHeartRate REAL,
+                avgSpeedMps REAL,
+                avgCadence REAL,
+                avgPower REAL,
+                avgGradePercent REAL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_splits_activityId ON splits(activityId)")
+    }
+}
+
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS activity_devices (
+                rowId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                activityId TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                connection TEXT NOT NULL,
+                manufacturer TEXT,
+                kind TEXT,
+                serialNumber INTEGER,
+                softwareVersion TEXT,
+                batteryStatus TEXT,
+                batteryPercent INTEGER,
+                batteryVoltage REAL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_activity_devices_activityId ON activity_devices(activityId)")
     }
 }
