@@ -61,6 +61,7 @@ data class UiState(
     val healthReloads: Map<String, HealthChartReload> = emptyMap(),
     val healthReloadPending: String? = null,
     val healthReloadStatus: String? = null,
+    val resyncError: String? = null,
 )
 
 class AppViewModel(
@@ -165,6 +166,39 @@ class AppViewModel(
             repo.markDeleted(id)
             _state.update { it.copy(selected = null, status = "Activity removed") }
         }
+    }
+
+    /** Downloads the open activity from Garmin again; the detail refreshes when it is stored. */
+    fun resyncActivity(id: String) {
+        // Claim the shared sync slot before suspending, so a full sync cannot start alongside.
+        if (_state.value.garminSync.running) return
+        _state.update {
+            it.copy(resyncError = null, garminSync = GarminSyncProgress(running = true, message = "Re-syncing activity…"))
+        }
+        viewModelScope.launch {
+            syncWakeLock.acquire()
+            try {
+                runCatching {
+                    repo.resyncGarminActivity(id) { update -> _state.update { it.copy(garminSync = update) } }
+                }.onSuccess { detail ->
+                    _state.update { st ->
+                        st.copy(
+                            selected = if (st.selected?.activity?.id == id) detail else st.selected,
+                            status = "Re-synced ${detail.activity.name}",
+                        )
+                    }
+                }.onFailure { err ->
+                    _state.update { it.copy(resyncError = err.message ?: "Re-sync failed") }
+                }
+            } finally {
+                syncWakeLock.release()
+                _state.update { it.copy(garminSync = GarminSyncProgress()) }
+            }
+        }
+    }
+
+    fun dismissResyncError() {
+        _state.update { it.copy(resyncError = null) }
     }
 
     fun restoreDeleted(id: String) {

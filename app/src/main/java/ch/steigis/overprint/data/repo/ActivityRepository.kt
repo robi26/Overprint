@@ -453,6 +453,38 @@ class ActivityRepository(
      * Prefer the stored DI session so the password is sent to Garmin only when there is
      * no usable access or refresh token left. A rejected session is dropped before SSO.
      */
+    /**
+     * Downloads one Garmin activity's FIT file again and replaces its track, laps and splits,
+     * so data the parser has learned to read since the first sync shows up. Name, location and
+     * notes stay as they are.
+     */
+    suspend fun resyncGarminActivity(id: String, progress: (GarminSyncProgress) -> Unit = {}): ActivityDetail {
+        val existing = db.activities().byId(id)?.toModel() ?: error("Activity not found")
+        if (existing.source != DataSource.GARMIN) error("Only activities downloaded from Garmin can be re-synced")
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) {
+            error("Enter your Garmin Connect email and password in Settings")
+        }
+        val client = GarminClient()
+        authenticate(client, prefs, progress)
+        progress(GarminSyncProgress(running = true, message = "Downloading ${existing.name}"))
+        val fresh = client.downloadFit(existing.externalId)
+        save(
+            ActivityDetail(
+                activity = fresh.activity.withListExtras(existing).copy(
+                    id = existing.id,
+                    name = existing.name,
+                    location = existing.location ?: fresh.activity.location,
+                    notes = existing.notes,
+                ),
+                track = fresh.track.map { it.copy(activityId = existing.id) },
+                laps = fresh.laps.map { it.copy(activityId = existing.id) },
+                splits = fresh.splits.map { it.copy(activityId = existing.id) },
+            ),
+        )
+        return get(id) ?: error("Activity not found")
+    }
+
     private suspend fun authenticate(
         client: GarminClient,
         prefs: AppSettings,

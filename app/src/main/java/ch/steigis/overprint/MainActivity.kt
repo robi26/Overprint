@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Insights
@@ -51,6 +52,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import ch.steigis.overprint.domain.model.DataSource
 import ch.steigis.overprint.ui.activities.ActivitiesScreen
 import ch.steigis.overprint.ui.calendar.CalendarScreen
 import ch.steigis.overprint.ui.detail.ActivityDetailScreen
@@ -174,6 +176,19 @@ private fun OverprintNav(
                             }
                         }
                     }
+                    val selected = state.selected?.activity
+                    if (route == "detail" && selected != null && selected.source == DataSource.GARMIN) {
+                        IconButton(
+                            onClick = { viewModel.resyncActivity(selected.id) },
+                            enabled = !state.garminSync.running,
+                        ) {
+                            if (state.garminSync.running) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Outlined.CloudDownload, contentDescription = "Re-sync from Garmin")
+                            }
+                        }
+                    }
                     if (route == "detail" && state.selected != null) {
                         IconButton(onClick = { confirmDelete = true }) {
                             Icon(Icons.Outlined.Delete, contentDescription = "Delete activity")
@@ -219,6 +234,16 @@ private fun OverprintNav(
             }
         },
     ) { padding ->
+        state.resyncError?.let { message ->
+            AlertDialog(
+                onDismissRequest = viewModel::dismissResyncError,
+                title = { Text("Re-sync failed") },
+                text = { Text(message) },
+                confirmButton = {
+                    TextButton(onClick = viewModel::dismissResyncError) { Text("OK") }
+                },
+            )
+        }
         if (confirmDelete) {
             AlertDialog(
                 onDismissRequest = { confirmDelete = false },
