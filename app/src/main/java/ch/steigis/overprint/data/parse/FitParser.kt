@@ -5,6 +5,8 @@ import ch.steigis.overprint.domain.model.ActivityDetail
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DataSource
 import ch.steigis.overprint.domain.model.Lap
+import ch.steigis.overprint.domain.model.Split
+import ch.steigis.overprint.domain.model.SplitKind
 import ch.steigis.overprint.domain.model.TrackPoint
 import ch.steigis.overprint.domain.stats.StatsEngine
 import ch.steigis.overprint.domain.stats.sanitizeActivity
@@ -17,7 +19,7 @@ import kotlin.math.pow
 
 /**
  * Decoder for Garmin FIT activity files. Covers the messages used for summaries:
- * file_id, session, lap, record, activity, event.
+ * file_id, session, lap, record, activity, event, split.
  */
 object FitParser {
 
@@ -187,13 +189,114 @@ object FitParser {
             )
         }
 
+        val lastRecordTs = records.mapNotNull { it.timestamp }.maxOrNull()
+        val endMillis = lastRecordTs?.let(::fitTimestampToMillis)
+            ?: (startMillis + ((session.elapsed ?: 0.0) * 1000).toLong())
+        val splits = (deviceSplits(id, session.splits, track) + riderPositionSplits(id, session.riderPositions, track, endMillis))
+            .sortedBy { it.startTimeMillis }
+
         return ActivityDetail(
             sanitizeActivity(activity.copy(id = id, hasTrack = track.isNotEmpty()))
                 .let { it.copy(deviceName = it.deviceName ?: session.device) }
                 .withDerivedTrackStats(track),
             track.map { it.copy(activityId = id) },
             parsedLaps.map { sanitizeLap(it.copy(activityId = id)) },
+            splits,
         )
+    }
+
+    /** Run/walk detection and ClimbPro splits the watch wrote as split messages. */
+    private fun deviceSplits(id: String, raw: List<RawSplit>, track: List<TrackPoint>): List<Split> =
+        raw.mapNotNull { r ->
+            val elapsed = r.elapsed?.takeIf { it > 0 } ?: return@mapNotNull null
+            val start = fitTimestampToMillis(r.start ?: return@mapNotNull null)
+            val window = WindowStats(track, start, start + (elapsed * 1000).toLong())
+            val moving = r.moving ?: r.timer
+            val distance = r.distance ?: window.distance
+            Split(
+                activityId = id,
+                kind = r.kind,
+                startTimeMillis = start,
+                durationSeconds = elapsed,
+                movingSeconds = moving,
+                distanceMeters = distance,
+                ascentMeters = r.ascent ?: window.ascent,
+                descentMeters = r.descent ?: window.descent,
+                avgHeartRate = r.avgHr ?: window.avgHr,
+                maxHeartRate = r.maxHr ?: window.maxHr,
+                avgSpeedMps = r.avgSpeed ?: distance?.let { it / (moving ?: elapsed) },
+                avgCadence = r.avgCadence ?: window.avgCadence,
+                avgPower = r.avgPower ?: window.avgPower,
+                avgGradePercent = r.avgGrade ?: window.grade,
+            )
+        }
+
+    /** Seated and standing stretches from rider_position_change events (cycling dynamics pedals). */
+    private fun riderPositionSplits(
+        id: String,
+        events: List<Pair<Long, Int>>,
+        track: List<TrackPoint>,
+        endMillis: Long,
+    ): List<Split> {
+        val changes = events.sortedBy { it.first }.mapNotNull { (ts, position) ->
+            val kind = when (position) {
+                0, 2 -> SplitKind.SEATED
+                1, 3 -> SplitKind.STANDING
+                else -> null
+            }
+            kind?.let { fitTimestampToMillis(ts) to it }
+        }
+        if (changes.none { it.second == SplitKind.STANDING }) return emptyList()
+        val segments = mutableListOf<Triple<SplitKind, Long, Long>>()
+        changes.forEachIndexed { i, (start, kind) ->
+            val end = changes.getOrNull(i + 1)?.first ?: endMillis
+            val last = segments.lastOrNull()
+            if (last != null && last.first == kind) {
+                segments[segments.lastIndex] = Triple(kind, last.second, end)
+            } else {
+                segments += Triple(kind, start, end)
+            }
+        }
+        return segments.filter { it.third - it.second >= 1000L }.map { (kind, start, end) ->
+            val window = WindowStats(track, start, end)
+            val seconds = (end - start) / 1000.0
+            Split(
+                activityId = id,
+                kind = kind,
+                startTimeMillis = start,
+                durationSeconds = seconds,
+                distanceMeters = window.distance,
+                ascentMeters = window.ascent,
+                descentMeters = window.descent,
+                avgHeartRate = window.avgHr,
+                maxHeartRate = window.maxHr,
+                avgSpeedMps = window.distance?.let { it / seconds },
+                avgCadence = window.avgCadence,
+                avgPower = window.avgPower,
+                avgGradePercent = window.grade,
+            )
+        }
+    }
+
+    /** Track statistics between two times, for split fields the file leaves out. */
+    private class WindowStats(track: List<TrackPoint>, startMillis: Long, endMillis: Long) {
+        private val points = track.filter { it.timestampMillis >= startMillis && it.timestampMillis < endMillis }
+        val distance: Double? = points.mapNotNull { it.distanceMeters }.let { d ->
+            if (d.size >= 2) (d.last() - d.first()).coerceAtLeast(0.0) else null
+        }
+        val ascent: Double? = if (points.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationGain(points) else null
+        val descent: Double? = if (points.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationLoss(points) else null
+        val avgHr: Double? = points.mapNotNull { it.heartRate }.averageOrNull()
+        val maxHr: Double? = points.mapNotNull { it.heartRate }.maxOrNull()
+        val avgCadence: Double? = points.mapNotNull { it.cadence?.takeIf { c -> c > 0 } }.averageOrNull()
+        val avgPower: Double? = points.mapNotNull { it.power }.averageOrNull()
+        val grade: Double? = run {
+            val alts = points.mapNotNull { it.altitudeMeters }
+            val dist = distance
+            if (alts.size >= 2 && dist != null && dist > 10.0) (alts.last() - alts.first()) / dist * 100.0 else null
+        }
+
+        private fun List<Double>.averageOrNull(): Double? = if (isEmpty()) null else average()
     }
 
     private fun ingest(
@@ -285,6 +388,41 @@ object FitParser {
                 session.avgRespirationRate = values[169]?.div(100.0) ?: values[147] ?: session.avgRespirationRate
                 session.aerobicTe = values[24]?.div(10.0) ?: session.aerobicTe
                 session.anaerobicTe = values[137]?.div(10.0) ?: session.anaerobicTe
+            }
+            21 -> {
+                // event 44 = rider_position_change; data holds the rider_position_type.
+                val position = (values[3] ?: values[2])?.toInt()
+                if (values[0]?.toInt() == 44 && timestamp != null && position != null) {
+                    session.riderPositions += timestamp to position
+                }
+            }
+            312 -> {
+                val kind = when (values[0]?.toInt()) {
+                    17 -> SplitKind.RUN
+                    18 -> SplitKind.WALK
+                    22 -> SplitKind.IDLE
+                    9 -> SplitKind.CLIMB
+                    else -> null
+                }
+                if (kind != null) {
+                    val elapsed = values[1]?.div(1000.0)
+                    session.splits += RawSplit(
+                        kind = kind,
+                        start = values[9]?.toLong() ?: timestamp?.minus((elapsed ?: 0.0).toLong()),
+                        elapsed = elapsed,
+                        timer = values[2]?.div(1000.0),
+                        moving = values[110]?.div(1000.0),
+                        distance = values[3]?.div(100.0),
+                        avgSpeed = values[4]?.div(1000.0),
+                        ascent = values[13],
+                        descent = values[14],
+                        avgHr = values[15],
+                        maxHr = values[16],
+                        avgCadence = values[29]?.div(128.0),
+                        avgPower = values[40],
+                        avgGrade = values[88]?.div(100.0),
+                    )
+                }
             }
         }
     }
@@ -473,7 +611,25 @@ object FitParser {
         val avgPower: Double?,
         val elev: Double?,
     )
+    private data class RawSplit(
+        val kind: SplitKind,
+        val start: Long?,
+        val elapsed: Double?,
+        val timer: Double?,
+        val moving: Double?,
+        val distance: Double?,
+        val avgSpeed: Double?,
+        val ascent: Double?,
+        val descent: Double?,
+        val avgHr: Double?,
+        val maxHr: Double?,
+        val avgCadence: Double?,
+        val avgPower: Double?,
+        val avgGrade: Double?,
+    )
     private class RawSession {
+        val splits = mutableListOf<RawSplit>()
+        val riderPositions = mutableListOf<Pair<Long, Int>>()
         var startTime: Long? = null
         var sport: String? = null
         var elapsed: Double? = null

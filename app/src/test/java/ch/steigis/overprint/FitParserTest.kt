@@ -1,6 +1,7 @@
 package ch.steigis.overprint
 
 import ch.steigis.overprint.data.parse.FitParser
+import ch.steigis.overprint.domain.model.SplitKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -188,6 +189,72 @@ class FitParserTest {
         assertEquals(18.0, detail.activity.avgTemperatureC)
         assertEquals(120.0, detail.activity.minHeartRate)
         assertEquals("Forerunner 965", detail.activity.deviceName)
+    }
+
+    @Test
+    fun deviceSplitsKeepRunWalkAndClimbs() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(3, 1, 2), Field(5, 4, 6)))
+            (0..6).forEach { i ->
+                data(0) {
+                    u32(start + i * 10)
+                    u8(140 + i)
+                    u32(i * 400L)
+                }
+            }
+            definition(
+                local = 1,
+                global = 312,
+                fields = listOf(
+                    Field(253, 4, 6), Field(0, 1, 0), Field(1, 4, 6), Field(3, 4, 6), Field(9, 4, 6), Field(13, 2, 4),
+                ),
+            )
+            data(1) { u32(start + 30); u8(17); u32(30_000); u32(12_000); u32(start); u16(5) }
+            data(1) { u32(start + 60); u8(18); u32(30_000); u32(3_000); u32(start + 30); u16(0xFFFF) }
+            data(1) { u32(start + 60); u8(9); u32(60_000); u32(15_000); u32(start); u16(12) }
+            data(1) { u32(start + 60); u8(10); u32(10_000); u32(1_000); u32(start); u16(0) }
+        }
+        val detail = FitParser.parse(bytes, "t")
+        val splits = detail.splits
+        assertEquals(listOf(SplitKind.RUN, SplitKind.CLIMB, SplitKind.WALK), splits.map { it.kind })
+        val run = splits[0]
+        assertEquals(detail.track[0].timestampMillis, run.startTimeMillis)
+        assertEquals(30.0, run.durationSeconds, 0.01)
+        assertEquals(120.0, run.distanceMeters!!, 0.01)
+        assertEquals(5.0, run.ascentMeters!!, 0.01)
+        assertEquals(4.0, run.avgSpeedMps!!, 0.01)
+        assertEquals(141.0, run.avgHeartRate!!, 0.01)
+        val walk = splits[2]
+        assertEquals(30.0, walk.distanceMeters!!, 0.01)
+        assertEquals(144.0, walk.avgHeartRate!!, 0.01)
+        assertEquals(null, walk.ascentMeters)
+        assertEquals(12.0, splits[1].ascentMeters!!, 0.01)
+    }
+
+    @Test
+    fun riderPositionEventsBecomeSeatedAndStandingSplits() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(7, 2, 4)))
+            (0..6).forEach { i ->
+                data(0) {
+                    u32(start + i * 10)
+                    u16(if (i in 2..3) 400 else 200)
+                }
+            }
+            definition(local = 1, global = 21, fields = listOf(Field(253, 4, 6), Field(0, 1, 0), Field(1, 1, 0), Field(3, 4, 6)))
+            data(1) { u32(start); u8(0); u8(0); u32(0) }
+            data(1) { u32(start); u8(44); u8(3); u32(0) }
+            data(1) { u32(start + 20); u8(44); u8(3); u32(1) }
+            data(1) { u32(start + 40); u8(44); u8(3); u32(0) }
+        }
+        val splits = FitParser.parse(bytes, "t").splits
+        assertEquals(listOf(SplitKind.SEATED, SplitKind.STANDING, SplitKind.SEATED), splits.map { it.kind })
+        assertEquals(listOf(20.0, 20.0, 20.0), splits.map { it.durationSeconds })
+        assertEquals(200.0, splits[0].avgPower!!, 0.01)
+        assertEquals(400.0, splits[1].avgPower!!, 0.01)
+        assertEquals(200.0, splits[2].avgPower!!, 0.01)
     }
 }
 

@@ -54,6 +54,7 @@ private enum class DetailTab(val label: String) {
     OVERVIEW("Overview"),
     DETAILS("Details"),
     LAPS("Laps"),
+    SPLITS("Splits"),
 }
 
 @Composable
@@ -84,11 +85,12 @@ fun ActivityDetailScreen(
     val hrZones = remember(detail.track, maxHr) { StatsEngine.timeInHrZones(detail.track, maxHr) }
     val pwZones = remember(detail.track, ftp) { StatsEngine.timeInPowerZones(detail.track, ftp) }
     val rolling = remember(detail.track) { StatsEngine.bestRolling(detail.track) }
-    val tabs = remember(detail.laps) {
+    val tabs = remember(detail.laps, detail.splits) {
         buildList {
             add(DetailTab.OVERVIEW)
             add(DetailTab.DETAILS)
             if (detail.laps.isNotEmpty()) add(DetailTab.LAPS)
+            if (detail.splits.isNotEmpty()) add(DetailTab.SPLITS)
         }
     }
     var tab by remember(detail.activity.id) { mutableStateOf(DetailTab.OVERVIEW) }
@@ -119,6 +121,8 @@ fun ActivityDetailScreen(
         }
         if (selectedTab == DetailTab.LAPS) {
             LapsTab(detail.laps, detail.activity.type, fmt)
+        } else if (selectedTab == DetailTab.SPLITS) {
+            SplitsTab(detail.activity, detail.splits, fmt)
         } else if (selectedTab == DetailTab.DETAILS) {
             DetailsList(detail, fmt)
         } else {
@@ -141,7 +145,7 @@ fun ActivityDetailScreen(
                         hrZones = hrZones,
                         powerZones = pwZones,
                     )
-                    DetailTab.DETAILS, DetailTab.LAPS -> Unit
+                    DetailTab.DETAILS, DetailTab.LAPS, DetailTab.SPLITS -> Unit
                 }
                 Spacer(Modifier.height(24.dp))
             }

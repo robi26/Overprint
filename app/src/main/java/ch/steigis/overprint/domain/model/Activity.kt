@@ -121,10 +121,50 @@ data class Lap(
     val label: String,
 )
 
+/** What a [Split] covers; [group] puts kinds that share a timeline together. */
+enum class SplitKind(val key: String, val label: String, val group: SplitGroup) {
+    RUN("run", "Run", SplitGroup.RUN_WALK),
+    WALK("walk", "Walk", SplitGroup.RUN_WALK),
+    IDLE("idle", "Idle", SplitGroup.RUN_WALK),
+    CLIMB("climb", "Climb", SplitGroup.CLIMBS),
+    SEATED("seated", "Seated", SplitGroup.RIDER_POSITION),
+    STANDING("standing", "Standing", SplitGroup.RIDER_POSITION),
+    ;
+
+    companion object {
+        fun fromKey(key: String): SplitKind? = entries.firstOrNull { it.key == key }
+    }
+}
+
+enum class SplitGroup(val title: String) {
+    RUN_WALK("Run / walk"),
+    CLIMBS("Climbs"),
+    RIDER_POSITION("Seated / standing"),
+}
+
+/** A stretch of an activity the device classified, e.g. a walk break or a climb. */
+data class Split(
+    val activityId: String,
+    val kind: SplitKind,
+    val startTimeMillis: Long,
+    val durationSeconds: Double,
+    val movingSeconds: Double? = null,
+    val distanceMeters: Double? = null,
+    val ascentMeters: Double? = null,
+    val descentMeters: Double? = null,
+    val avgHeartRate: Double? = null,
+    val maxHeartRate: Double? = null,
+    val avgSpeedMps: Double? = null,
+    val avgCadence: Double? = null,
+    val avgPower: Double? = null,
+    val avgGradePercent: Double? = null,
+)
+
 data class ActivityDetail(
     val activity: Activity,
     val track: List<TrackPoint>,
     val laps: List<Lap>,
+    val splits: List<Split> = emptyList(),
 )
 
 data class ZoneBucket(

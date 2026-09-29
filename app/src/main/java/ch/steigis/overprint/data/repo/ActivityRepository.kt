@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.map
 import ch.steigis.overprint.data.local.ActivityEntity
 import ch.steigis.overprint.data.local.AppDatabase
 import ch.steigis.overprint.data.local.LapEntity
+import ch.steigis.overprint.data.local.SplitEntity
 import ch.steigis.overprint.data.local.TrackPointEntity
 import ch.steigis.overprint.data.local.toEntity
 import ch.steigis.overprint.data.local.toModel
@@ -37,6 +38,8 @@ import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.GeoPoint
 import ch.steigis.overprint.domain.model.GpsTrack
 import ch.steigis.overprint.domain.model.Lap
+import ch.steigis.overprint.domain.model.Split
+import ch.steigis.overprint.domain.model.SplitKind
 import ch.steigis.overprint.domain.model.TrackPoint
 import ch.steigis.overprint.domain.stats.sanitizeActivity
 import ch.steigis.overprint.domain.stats.sanitizeFitUnits
@@ -201,7 +204,8 @@ class ActivityRepository(
         val entity = db.activities().byId(id) ?: return null
         val track = withNormalizedElapsed(sanitizeFitUnits(db.tracks().forActivity(id).map { it.toModel() }))
         val laps = db.laps().forActivity(id).map { it.toModel() }
-        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps)
+        val splits = db.splits().forActivity(id).mapNotNull { it.toModel() }
+        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps, splits)
     }
 
     suspend fun gpsTracks(
@@ -484,6 +488,7 @@ class ActivityRepository(
             activity = detail.activity.copy(deleted = false).toEntity(),
             track = detail.track.map { it.toEntity() },
             laps = detail.laps.map { it.toEntity() },
+            splits = detail.splits.map { it.toEntity() },
         )
     }
 
@@ -503,6 +508,7 @@ class ActivityRepository(
     suspend fun delete(id: String) {
         db.tracks().deleteFor(id)
         db.laps().deleteFor(id)
+        db.splits().deleteFor(id)
         db.activities().delete(id)
     }
 }
@@ -564,6 +570,30 @@ private fun TrackPoint.toEntity() = TrackPointEntity(
     leftRightBalancePercent = leftRightBalancePercent,
     respirationRate = respirationRate,
     stanceTimeBalancePercent = stanceTimeBalancePercent,
+)
+
+private fun SplitEntity.toModel(): Split? = SplitKind.fromKey(kind)?.let { k ->
+    Split(
+        activityId, k, startTimeMillis, durationSeconds, movingSeconds, distanceMeters, ascentMeters,
+        descentMeters, avgHeartRate, maxHeartRate, avgSpeedMps, avgCadence, avgPower, avgGradePercent,
+    )
+}
+
+private fun Split.toEntity() = SplitEntity(
+    activityId = activityId,
+    kind = kind.key,
+    startTimeMillis = startTimeMillis,
+    durationSeconds = durationSeconds,
+    movingSeconds = movingSeconds,
+    distanceMeters = distanceMeters,
+    ascentMeters = ascentMeters,
+    descentMeters = descentMeters,
+    avgHeartRate = avgHeartRate,
+    maxHeartRate = maxHeartRate,
+    avgSpeedMps = avgSpeedMps,
+    avgCadence = avgCadence,
+    avgPower = avgPower,
+    avgGradePercent = avgGradePercent,
 )
 
 private fun LapEntity.toModel() = sanitizeLap(
