@@ -160,11 +160,40 @@ data class Split(
     val avgGradePercent: Double? = null,
 )
 
+enum class DeviceConnection(val key: String, val label: String) {
+    RECORDER("recorder", "Recording device"),
+    ANT("ant", "ANT+"),
+    BLUETOOTH("bluetooth", "Bluetooth"),
+    OTHER("other", "Connected"),
+    BUILT_IN("built_in", "Built-in"),
+    ;
+
+    companion object {
+        fun fromKey(key: String): DeviceConnection = entries.firstOrNull { it.key == key } ?: OTHER
+    }
+}
+
+/** The watch that recorded an activity, or a sensor that fed it data. */
+data class ActivityDevice(
+    val activityId: String,
+    val name: String,
+    val connection: DeviceConnection,
+    val manufacturer: String? = null,
+    /** What the device measures, e.g. "Heart rate monitor" or "Footpod". */
+    val kind: String? = null,
+    val serialNumber: Long? = null,
+    val softwareVersion: String? = null,
+    val batteryStatus: String? = null,
+    val batteryPercent: Int? = null,
+    val batteryVoltage: Double? = null,
+)
+
 data class ActivityDetail(
     val activity: Activity,
     val track: List<TrackPoint>,
     val laps: List<Lap>,
     val splits: List<Split> = emptyList(),
+    val devices: List<ActivityDevice> = emptyList(),
 )
 
 data class ZoneBucket(

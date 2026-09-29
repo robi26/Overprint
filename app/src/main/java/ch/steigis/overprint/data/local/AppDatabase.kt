@@ -109,6 +109,25 @@ data class SplitEntity(
 )
 
 @Entity(
+    tableName = "activity_devices",
+    indices = [Index("activityId")],
+)
+data class ActivityDeviceEntity(
+    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
+    val activityId: String,
+    val position: Int,
+    val name: String,
+    val connection: String,
+    val manufacturer: String?,
+    val kind: String?,
+    val serialNumber: Long?,
+    val softwareVersion: String?,
+    val batteryStatus: String?,
+    val batteryPercent: Int?,
+    val batteryVoltage: Double?,
+)
+
+@Entity(
     tableName = "laps",
     indices = [Index("activityId")],
 )
@@ -235,13 +254,25 @@ interface SplitDao {
     suspend fun deleteFor(id: String): Int
 }
 
+@Dao
+interface ActivityDeviceDao {
+    @Query("SELECT * FROM activity_devices WHERE activityId = :id ORDER BY position ASC")
+    suspend fun forActivity(id: String): List<ActivityDeviceEntity>
+
+    @Insert
+    suspend fun insertAll(devices: List<ActivityDeviceEntity>)
+
+    @Query("DELETE FROM activity_devices WHERE activityId = :id")
+    suspend fun deleteFor(id: String): Int
+}
+
 @Database(
     entities = [
         ActivityEntity::class, TrackPointEntity::class, LapEntity::class,
         DailyHealthEntity::class, HealthSampleEntity::class, HealthReloadEntity::class,
-        SplitEntity::class,
+        SplitEntity::class, ActivityDeviceEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -249,6 +280,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun tracks(): TrackDao
     abstract fun laps(): LapDao
     abstract fun splits(): SplitDao
+    abstract fun devices(): ActivityDeviceDao
     abstract fun health(): DailyHealthDao
     abstract fun healthSamples(): HealthSampleDao
     abstract fun healthReloads(): HealthReloadDao
@@ -259,14 +291,17 @@ abstract class AppDatabase : RoomDatabase() {
         track: List<TrackPointEntity>,
         laps: List<LapEntity>,
         splits: List<SplitEntity> = emptyList(),
+        devices: List<ActivityDeviceEntity> = emptyList(),
     ) {
         activities().upsert(activity)
         tracks().deleteFor(activity.id)
         laps().deleteFor(activity.id)
         splits().deleteFor(activity.id)
+        devices().deleteFor(activity.id)
         if (track.isNotEmpty()) tracks().insertAll(track)
         if (laps.isNotEmpty()) laps().insertAll(laps)
         if (splits.isNotEmpty()) splits().insertAll(splits)
+        if (devices.isNotEmpty()) devices().insertAll(devices)
     }
 }
 
@@ -390,5 +425,29 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
             """.trimIndent(),
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS index_splits_activityId ON splits(activityId)")
+    }
+}
+
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS activity_devices (
+                rowId INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                activityId TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                connection TEXT NOT NULL,
+                manufacturer TEXT,
+                kind TEXT,
+                serialNumber INTEGER,
+                softwareVersion TEXT,
+                batteryStatus TEXT,
+                batteryPercent INTEGER,
+                batteryVoltage REAL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_activity_devices_activityId ON activity_devices(activityId)")
     }
 }

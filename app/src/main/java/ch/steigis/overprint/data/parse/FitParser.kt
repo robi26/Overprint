@@ -2,8 +2,10 @@ package ch.steigis.overprint.data.parse
 
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
+import ch.steigis.overprint.domain.model.ActivityDevice
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DataSource
+import ch.steigis.overprint.domain.model.DeviceConnection
 import ch.steigis.overprint.domain.model.Lap
 import ch.steigis.overprint.domain.model.Split
 import ch.steigis.overprint.domain.model.SplitKind
@@ -19,7 +21,7 @@ import kotlin.math.pow
 
 /**
  * Decoder for Garmin FIT activity files. Covers the messages used for summaries:
- * file_id, session, lap, record, activity, event, split.
+ * file_id, device_info, session, lap, record, activity, event, split.
  */
 object FitParser {
 
@@ -202,7 +204,96 @@ object FitParser {
             track.map { it.copy(activityId = id) },
             parsedLaps.map { sanitizeLap(it.copy(activityId = id)) },
             splits,
+            activityDevices(id, session.devices.values),
         )
+    }
+
+    /** The recording device and the sensors it logged in device_info, recorder first. */
+    private fun activityDevices(id: String, raw: Collection<RawDevice>): List<ActivityDevice> =
+        raw.mapNotNull { d ->
+            val connection = when {
+                d.creator -> DeviceConnection.RECORDER
+                d.sourceType == 0 || d.sourceType == 1 -> DeviceConnection.ANT
+                d.sourceType == 2 || d.sourceType == 3 -> DeviceConnection.BLUETOOTH
+                d.sourceType == 5 -> DeviceConnection.BUILT_IN
+                else -> DeviceConnection.OTHER
+            }
+            val kind = deviceKind(d.sourceType, d.deviceType)
+            val manufacturer = d.manufacturer?.let(FitNames::manufacturer)
+            val product = d.name
+                ?: d.product?.takeIf { d.manufacturer in GARMIN_MANUFACTURERS }?.let(FitNames::garminProduct)
+            // Built-in sensors often carry the watch's own product id, so name them by what they measure.
+            val name = (if (connection == DeviceConnection.BUILT_IN) kind ?: product else product)
+                ?: listOfNotNull(manufacturer, kind?.lowercase()).joinToString(" ").takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            ActivityDevice(
+                activityId = id,
+                name = name,
+                connection = connection,
+                manufacturer = manufacturer,
+                kind = kind,
+                serialNumber = d.serial,
+                softwareVersion = d.software?.let { String.format(java.util.Locale.US, "%.2f", it) },
+                batteryStatus = when (d.batteryStatus) {
+                    1 -> "new"
+                    2 -> "good"
+                    3 -> "ok"
+                    4 -> "low"
+                    5 -> "critical"
+                    6 -> "charging"
+                    else -> null
+                },
+                batteryPercent = d.batteryLevel?.takeIf { it in 0..100 },
+                batteryVoltage = d.batteryVoltage,
+            )
+        }.sortedBy { it.connection.ordinal }
+
+    /** device_type is read through ant+/ble/local device type tables, picked by source_type. */
+    private fun deviceKind(sourceType: Int?, deviceType: Int?): String? = when (sourceType) {
+        0, 1 -> when (deviceType) {
+            11 -> "Power meter"
+            12, 25 -> "Environment sensor"
+            15 -> "Speed/distance sensor"
+            16 -> "Remote control"
+            17 -> "Fitness equipment"
+            27 -> "Control hub"
+            31 -> "Muscle oxygen sensor"
+            34 -> "Shifting"
+            35, 36 -> "Bike light"
+            38 -> "Display"
+            40 -> "Bike radar"
+            46 -> "Bike aero sensor"
+            119 -> "Weight scale"
+            120 -> "Heart rate monitor"
+            121 -> "Speed/cadence sensor"
+            122 -> "Cadence sensor"
+            123 -> "Speed sensor"
+            124 -> "Footpod"
+            else -> null
+        }
+        2, 3 -> when (deviceType) {
+            0 -> "Connected GPS"
+            1 -> "Heart rate monitor"
+            2 -> "Power meter"
+            3 -> "Speed/cadence sensor"
+            4 -> "Speed sensor"
+            5 -> "Cadence sensor"
+            6 -> "Footpod"
+            7 -> "Bike trainer"
+            else -> null
+        }
+        5 -> when (deviceType) {
+            0 -> "GPS"
+            1 -> "GLONASS"
+            2 -> "GPS/GLONASS"
+            3 -> "Accelerometer"
+            4 -> "Barometer"
+            5 -> "Temperature sensor"
+            10 -> "Wrist heart rate"
+            12 -> "Sensor hub"
+            else -> null
+        }
+        else -> null
     }
 
     /** Run/walk detection and ClimbPro splits the watch wrote as split messages. */
@@ -311,7 +402,30 @@ object FitParser {
         when (global) {
             0, 23 -> {
                 val index = values[0]
-                val name = fields.strings[27] ?: fields.strings[19]
+                val name = if (global == 0) fields.strings[8] else fields.strings[27] ?: fields.strings[19]
+                val creator = global == 0 || index == 0.0
+                val serial = values[3]?.toLong()?.takeIf { it > 0 }
+                val raw = RawDevice(
+                    creator = creator,
+                    sourceType = if (global == 23) values[25]?.toInt() else null,
+                    deviceType = if (global == 23) values[1]?.toInt() else null,
+                    manufacturer = values[if (global == 0) 1 else 2]?.toInt(),
+                    product = values[if (global == 0) 2 else 4]?.toInt(),
+                    serial = serial,
+                    name = name,
+                    software = if (global == 23) values[5]?.div(100.0) else null,
+                    batteryStatus = if (global == 23) values[11]?.toInt() else null,
+                    batteryLevel = if (global == 23) values[32]?.toInt() else null,
+                    batteryVoltage = if (global == 23) values[10]?.div(256.0) else null,
+                )
+                // Devices are logged again (e.g. at the end with battery state); merge per device.
+                val key = when {
+                    creator -> "creator"
+                    serial != null -> "serial:$serial"
+                    values[21] != null -> "ant:${values[21]?.toInt()}:${raw.deviceType}"
+                    else -> "device:${index?.toInt()}:${raw.sourceType}:${raw.deviceType}:${raw.manufacturer}:${raw.product}"
+                }
+                session.devices[key] = session.devices[key]?.merge(raw) ?: raw
                 val label = deviceLabel(
                     manufacturer = values[if (global == 0) 1 else 2]?.toInt(),
                     product = values[if (global == 0) 2 else 4]?.toInt(),
@@ -479,6 +593,11 @@ object FitParser {
                 invalid = 0xFFFF.toDouble()
                 v.toDouble()
             }
+            11 -> { // uint16z
+                val v = buf.short.toInt() and 0xFFFF
+                invalid = 0.0
+                v.toDouble()
+            }
             5 -> {
                 val v = buf.int
                 invalid = 0x7FFFFFFF.toDouble()
@@ -539,15 +658,13 @@ object FitParser {
 
     private fun deviceLabel(manufacturer: Int?, product: Int?, productName: String?): String? {
         productName?.takeIf { it.isNotBlank() }?.let { return it }
-        val mfr = when (manufacturer) {
-            1 -> "Garmin"
-            15 -> "Dynastream"
-            32 -> "Wahoo"
-            263 -> "Favero"
-            else -> null
-        } ?: return null
+        if (manufacturer in GARMIN_MANUFACTURERS && product != null) FitNames.garminProduct(product)?.let { return it }
+        val mfr = manufacturer?.let(FitNames::manufacturer) ?: return null
         return if (product != null) "$mfr $product" else mfr
     }
+
+    /** Garmin, Dynastream and Dynastream OEM share Garmin's product ids. */
+    private val GARMIN_MANUFACTURERS = setOf(1, 13, 15)
 
     private fun semicircles(v: Double?): Double? {
         v ?: return null
@@ -627,7 +744,36 @@ object FitParser {
         val avgPower: Double?,
         val avgGrade: Double?,
     )
+    private data class RawDevice(
+        val creator: Boolean,
+        val sourceType: Int?,
+        val deviceType: Int?,
+        val manufacturer: Int?,
+        val product: Int?,
+        val serial: Long?,
+        val name: String?,
+        val software: Double?,
+        val batteryStatus: Int?,
+        val batteryLevel: Int?,
+        val batteryVoltage: Double?,
+    ) {
+        /** Later messages win where they have a value; battery readings are latest-first. */
+        fun merge(next: RawDevice) = RawDevice(
+            creator = creator || next.creator,
+            sourceType = next.sourceType ?: sourceType,
+            deviceType = next.deviceType ?: deviceType,
+            manufacturer = next.manufacturer ?: manufacturer,
+            product = next.product ?: product,
+            serial = next.serial ?: serial,
+            name = next.name ?: name,
+            software = next.software ?: software,
+            batteryStatus = next.batteryStatus ?: batteryStatus,
+            batteryLevel = next.batteryLevel ?: batteryLevel,
+            batteryVoltage = next.batteryVoltage ?: batteryVoltage,
+        )
+    }
     private class RawSession {
+        val devices = LinkedHashMap<String, RawDevice>()
         val splits = mutableListOf<RawSplit>()
         val riderPositions = mutableListOf<Pair<Long, Int>>()
         var startTime: Long? = null

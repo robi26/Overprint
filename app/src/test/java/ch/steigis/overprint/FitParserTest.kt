@@ -1,6 +1,7 @@
 package ch.steigis.overprint
 
 import ch.steigis.overprint.data.parse.FitParser
+import ch.steigis.overprint.domain.model.DeviceConnection
 import ch.steigis.overprint.domain.model.SplitKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -255,6 +256,47 @@ class FitParserTest {
         assertEquals(200.0, splits[0].avgPower!!, 0.01)
         assertEquals(400.0, splits[1].avgPower!!, 0.01)
         assertEquals(200.0, splits[2].avgPower!!, 0.01)
+    }
+
+    @Test
+    fun deviceInfoListsRecorderAndSensors() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 0, fields = listOf(Field(1, 2, 4), Field(2, 2, 4), Field(3, 4, 12)))
+            data(0) { u16(1); u16(4315); u32(3_900_000_001L) }
+            definition(local = 1, global = 20, fields = listOf(Field(253, 4, 6), Field(3, 1, 2)))
+            data(1) { u32(start); u8(140) }
+            data(1) { u32(start + 10); u8(150) }
+            definition(
+                local = 2,
+                global = 23,
+                fields = listOf(
+                    Field(253, 4, 6), Field(0, 1, 2), Field(1, 1, 2), Field(2, 2, 4), Field(3, 4, 12),
+                    Field(4, 2, 4), Field(5, 2, 4), Field(11, 1, 2), Field(25, 1, 0), Field(32, 1, 2),
+                ),
+            )
+            // recorder, ANT+ HRM-Pro, BLE Stryd footpod, built-in wrist HR, then the HRM again at the end
+            data(2) { u32(start); u8(0); u8(0xFF); u16(1); u32(3_900_000_001L); u16(4315); u16(2226); u8(0xFF); u8(5); u8(0xFF) }
+            data(2) { u32(start); u8(1); u8(120); u16(1); u32(12_345); u16(3300); u16(420); u8(2); u8(1); u8(0xFF) }
+            data(2) { u32(start); u8(2); u8(6); u16(95); u32(0); u16(0xFFFF); u16(0xFFFF); u8(0xFF); u8(3); u8(0xFF) }
+            data(2) { u32(start); u8(3); u8(10); u16(1); u32(0); u16(4315); u16(0xFFFF); u8(0xFF); u8(5); u8(0xFF) }
+            data(2) { u32(start + 10); u8(1); u8(120); u16(1); u32(12_345); u16(3300); u16(420); u8(4); u8(1); u8(70) }
+        }
+        val detail = FitParser.parse(bytes, "t")
+        val devices = detail.devices
+        assertEquals(listOf("Forerunner 965", "HRM-Pro", "Stryd footpod", "Wrist heart rate"), devices.map { it.name })
+        assertEquals(
+            listOf(DeviceConnection.RECORDER, DeviceConnection.ANT, DeviceConnection.BLUETOOTH, DeviceConnection.BUILT_IN),
+            devices.map { it.connection },
+        )
+        assertEquals("22.26", devices[0].softwareVersion)
+        assertEquals(3_900_000_001L, devices[0].serialNumber)
+        val hrm = devices[1]
+        assertEquals("Heart rate monitor", hrm.kind)
+        assertEquals("low", hrm.batteryStatus)
+        assertEquals(70, hrm.batteryPercent)
+        assertEquals(12_345L, hrm.serialNumber)
+        assertEquals("Forerunner 965", detail.activity.deviceName)
     }
 }
 

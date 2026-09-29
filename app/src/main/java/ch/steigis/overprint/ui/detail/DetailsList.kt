@@ -1,6 +1,7 @@
 package ch.steigis.overprint.ui.detail
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -21,6 +22,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.ActivityDetail
+import ch.steigis.overprint.domain.model.ActivityDevice
+import ch.steigis.overprint.domain.model.DeviceConnection
 import java.util.Locale
 
 private data class StatRow(val label: String, val value: String)
@@ -32,7 +35,8 @@ fun DetailsList(
     fmt: Formatters,
 ) {
     val groups = remember(detail, fmt.metric) { detailGroups(detail, fmt) }
-    if (groups.isEmpty()) {
+    val devices = remember(detail.devices) { deviceRows(detail.devices) }
+    if (groups.isEmpty() && devices.isEmpty()) {
         Text("No extra stats", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(16.dp))
         return
     }
@@ -47,7 +51,70 @@ fun DetailsList(
         groups.forEach { group ->
             statGroup(group, headerBg, headerColor, even, odd)
         }
+        if (devices.isNotEmpty()) {
+            deviceGroup(devices, headerBg, headerColor, even, odd)
+        }
     }
+}
+
+private data class DeviceRow(val title: String, val details: String)
+
+/** Recorder and paired sensors one per row; built-in sensors folded into one row. */
+private fun deviceRows(devices: List<ActivityDevice>): List<DeviceRow> {
+    val (builtIn, others) = devices.partition { it.connection == DeviceConnection.BUILT_IN }
+    val rows = others.map { d ->
+        val battery = listOfNotNull(
+            d.batteryStatus?.let { "battery $it" },
+            d.batteryPercent?.let { "$it%" },
+        ).joinToString(" ").ifEmpty { d.batteryVoltage?.let { String.format(Locale.US, "battery %.2f V", it) } ?: "" }
+        DeviceRow(
+            title = d.name,
+            details = listOfNotNull(
+                d.kind?.takeUnless { d.name.contains(it, ignoreCase = true) },
+                d.connection.label,
+                battery.ifEmpty { null },
+                d.softwareVersion?.let { "software $it" },
+                d.serialNumber?.let { "SN $it" },
+            ).joinToString(" · "),
+        )
+    }
+    val sensors = builtIn.map { it.name }.distinct()
+    return if (sensors.isEmpty()) rows else rows + DeviceRow("Built-in sensors", sensors.joinToString(", "))
+}
+
+private fun LazyListScope.deviceGroup(
+    rows: List<DeviceRow>,
+    headerBg: Color,
+    headerColor: Color,
+    even: Color,
+    odd: Color,
+) {
+    item(key = "h-devices") {
+        Text(
+            "DEVICES",
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(headerBg)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = headerColor,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+    itemsIndexed(rows, key = { index, row -> "device-$index-${row.title}" }) { index, row ->
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(if (index % 2 == 0) even else odd)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Text(row.title, fontWeight = FontWeight.Medium, style = MaterialTheme.typography.bodyMedium)
+            if (row.details.isNotBlank()) {
+                Text(row.details, style = MaterialTheme.typography.bodySmall, color = headerColor)
+            }
+        }
+    }
+    item(key = "d-devices") { HorizontalDivider() }
 }
 
 private fun LazyListScope.statGroup(

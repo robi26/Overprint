@@ -3,6 +3,7 @@ package ch.steigis.overprint.data.repo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import ch.steigis.overprint.data.local.ActivityDeviceEntity
 import ch.steigis.overprint.data.local.ActivityEntity
 import ch.steigis.overprint.data.local.AppDatabase
 import ch.steigis.overprint.data.local.LapEntity
@@ -28,11 +29,13 @@ import ch.steigis.overprint.data.remote.garmin.healthSeriesToDownload
 import ch.steigis.overprint.data.remote.garmin.mergeDailyHealth
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
+import ch.steigis.overprint.domain.model.ActivityDevice
 import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.DailyHealth
 import ch.steigis.overprint.domain.model.HealthChartReload
 import ch.steigis.overprint.domain.model.HealthReloadState
 import ch.steigis.overprint.domain.model.DataSource
+import ch.steigis.overprint.domain.model.DeviceConnection
 import ch.steigis.overprint.domain.model.HealthSample
 import ch.steigis.overprint.domain.model.HealthSeries
 import ch.steigis.overprint.domain.model.GeoPoint
@@ -205,7 +208,8 @@ class ActivityRepository(
         val track = withNormalizedElapsed(sanitizeFitUnits(db.tracks().forActivity(id).map { it.toModel() }))
         val laps = db.laps().forActivity(id).map { it.toModel() }
         val splits = db.splits().forActivity(id).mapNotNull { it.toModel() }
-        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps, splits)
+        val devices = db.devices().forActivity(id).map { it.toModel() }
+        return ActivityDetail(entity.toModel().withDerivedTrackStats(track), track, laps, splits, devices)
     }
 
     suspend fun gpsTracks(
@@ -473,6 +477,7 @@ class ActivityRepository(
                 track = fresh.track.map { it.copy(activityId = existing.id) },
                 laps = fresh.laps.map { it.copy(activityId = existing.id) },
                 splits = fresh.splits.map { it.copy(activityId = existing.id) },
+                devices = fresh.devices.map { it.copy(activityId = existing.id) },
             ),
         )
         return get(id) ?: error("Activity not found")
@@ -536,6 +541,7 @@ class ActivityRepository(
             track = detail.track.map { it.toEntity() },
             laps = detail.laps.map { it.toEntity() },
             splits = detail.splits.map { it.toEntity() },
+            devices = detail.devices.mapIndexed { i, d -> d.toEntity(i) },
         )
     }
 
@@ -556,6 +562,7 @@ class ActivityRepository(
         db.tracks().deleteFor(id)
         db.laps().deleteFor(id)
         db.splits().deleteFor(id)
+        db.devices().deleteFor(id)
         db.activities().delete(id)
     }
 }
@@ -641,6 +648,33 @@ private fun Split.toEntity() = SplitEntity(
     avgCadence = avgCadence,
     avgPower = avgPower,
     avgGradePercent = avgGradePercent,
+)
+
+private fun ActivityDeviceEntity.toModel() = ActivityDevice(
+    activityId = activityId,
+    name = name,
+    connection = DeviceConnection.fromKey(connection),
+    manufacturer = manufacturer,
+    kind = kind,
+    serialNumber = serialNumber,
+    softwareVersion = softwareVersion,
+    batteryStatus = batteryStatus,
+    batteryPercent = batteryPercent,
+    batteryVoltage = batteryVoltage,
+)
+
+private fun ActivityDevice.toEntity(position: Int) = ActivityDeviceEntity(
+    activityId = activityId,
+    position = position,
+    name = name,
+    connection = connection.key,
+    manufacturer = manufacturer,
+    kind = kind,
+    serialNumber = serialNumber,
+    softwareVersion = softwareVersion,
+    batteryStatus = batteryStatus,
+    batteryPercent = batteryPercent,
+    batteryVoltage = batteryVoltage,
 )
 
 private fun LapEntity.toModel() = sanitizeLap(
