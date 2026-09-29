@@ -371,23 +371,46 @@ object FitParser {
 
     /** Track statistics between two times, for split fields the file leaves out. */
     private class WindowStats(track: List<TrackPoint>, startMillis: Long, endMillis: Long) {
+        /** Samples inside the split, end excluded so back-to-back splits don't share one; for averages. */
         private val points = track.filter { it.timestampMillis >= startMillis && it.timestampMillis < endMillis }
-        val distance: Double? = points.mapNotNull { it.distanceMeters }.let { d ->
+
+        /** The same stretch with both edges pinned to the split's own times; for distance and elevation deltas. */
+        private val span = listOfNotNull(edge(track, startMillis)) +
+            track.filter { it.timestampMillis > startMillis && it.timestampMillis < endMillis } +
+            listOfNotNull(edge(track, endMillis))
+
+        val distance: Double? = span.mapNotNull { it.distanceMeters }.let { d ->
             if (d.size >= 2) (d.last() - d.first()).coerceAtLeast(0.0) else null
         }
-        val ascent: Double? = if (points.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationGain(points) else null
-        val descent: Double? = if (points.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationLoss(points) else null
+        val ascent: Double? = if (span.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationGain(span) else null
+        val descent: Double? = if (span.count { it.altitudeMeters != null } >= 2) StatsEngine.elevationLoss(span) else null
         val avgHr: Double? = points.mapNotNull { it.heartRate }.averageOrNull()
         val maxHr: Double? = points.mapNotNull { it.heartRate }.maxOrNull()
         val avgCadence: Double? = points.mapNotNull { it.cadence?.takeIf { c -> c > 0 } }.averageOrNull()
         val avgPower: Double? = points.mapNotNull { it.power }.averageOrNull()
         val grade: Double? = run {
-            val alts = points.mapNotNull { it.altitudeMeters }
+            val alts = span.mapNotNull { it.altitudeMeters }
             val dist = distance
             if (alts.size >= 2 && dist != null && dist > 10.0) (alts.last() - alts.first()) / dist * 100.0 else null
         }
 
         private fun List<Double>.averageOrNull(): Double? = if (isEmpty()) null else average()
+
+        /** The track at [at]: the sample there, or distance and altitude interpolated between its neighbours. */
+        private fun edge(track: List<TrackPoint>, at: Long): TrackPoint? {
+            val next = track.indexOfFirst { it.timestampMillis >= at }
+            if (next < 0) return null
+            val after = track[next]
+            if (after.timestampMillis == at) return after
+            val before = track.getOrNull(next - 1) ?: return null
+            val f = (at - before.timestampMillis).toDouble() / (after.timestampMillis - before.timestampMillis)
+            fun lerp(a: Double?, b: Double?) = if (a != null && b != null) a + (b - a) * f else null
+            return after.copy(
+                timestampMillis = at,
+                distanceMeters = lerp(before.distanceMeters, after.distanceMeters),
+                altitudeMeters = lerp(before.altitudeMeters, after.altitudeMeters),
+            )
+        }
     }
 
     private fun ingest(

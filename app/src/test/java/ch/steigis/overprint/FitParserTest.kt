@@ -237,11 +237,12 @@ class FitParserTest {
     fun riderPositionEventsBecomeSeatedAndStandingSplits() {
         val start = 1_000_000_000L
         val bytes = fitFile {
-            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(7, 2, 4)))
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(7, 2, 4), Field(5, 4, 6)))
             (0..6).forEach { i ->
                 data(0) {
                     u32(start + i * 10)
                     u16(if (i in 2..3) 400 else 200)
+                    u32(i * 10_000L)
                 }
             }
             definition(local = 1, global = 21, fields = listOf(Field(253, 4, 6), Field(0, 1, 0), Field(1, 1, 0), Field(3, 4, 6)))
@@ -256,6 +257,26 @@ class FitParserTest {
         assertEquals(200.0, splits[0].avgPower!!, 0.01)
         assertEquals(400.0, splits[1].avgPower!!, 0.01)
         assertEquals(200.0, splits[2].avgPower!!, 0.01)
+        // 100 m per 10 s: each 20 s stretch covers 200 m, including the last one ending on the final record.
+        assertEquals(listOf(200.0, 200.0, 200.0), splits.map { it.distanceMeters })
+    }
+
+    @Test
+    fun splitDistanceInterpolatesBetweenSamples() {
+        val start = 1_000_000_000L
+        val bytes = fitFile {
+            definition(local = 0, global = 20, fields = listOf(Field(253, 4, 6), Field(5, 4, 6)))
+            (0..6).forEach { i ->
+                data(0) {
+                    u32(start + i * 10)
+                    u32(i * 10_000L)
+                }
+            }
+            definition(local = 1, global = 312, fields = listOf(Field(253, 4, 6), Field(0, 1, 0), Field(1, 4, 6), Field(9, 4, 6)))
+            data(1) { u32(start + 40); u8(18); u32(20_000); u32(start + 15) }
+        }
+        val walk = FitParser.parse(bytes, "t").splits.single()
+        assertEquals(200.0, walk.distanceMeters!!, 0.01)
     }
 
     @Test

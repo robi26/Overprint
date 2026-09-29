@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -218,8 +219,9 @@ class AppViewModel(
             syncWakeLock.acquire()
             try {
                 runCatching { block() }.onFailure { err ->
+                    // Clean up even when cancelled, so an export never leaves a half-written file.
+                    withContext(NonCancellable + Dispatchers.IO) { onFailure() }
                     if (err is CancellationException) throw err
-                    withContext(Dispatchers.IO) { onFailure() }
                     _state.update { it.copy(actionError = ActionError(failureTitle, err.message ?: failureTitle)) }
                 }
             } finally {

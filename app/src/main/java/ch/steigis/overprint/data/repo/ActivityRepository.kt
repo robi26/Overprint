@@ -454,10 +454,6 @@ class ActivityRepository(
     }
 
     /**
-     * Prefer the stored DI session so the password is sent to Garmin only when there is
-     * no usable access or refresh token left. A rejected session is dropped before SSO.
-     */
-    /**
      * Downloads one Garmin activity's FIT file again and replaces its track, laps and splits,
      * so data the parser has learned to read since the first sync shows up. Name, location and
      * notes stay as they are.
@@ -505,6 +501,10 @@ class ActivityRepository(
         return existing to client
     }
 
+    /**
+     * Prefer the stored DI session so the password is sent to Garmin only when there is
+     * no usable access or refresh token left. A rejected session is dropped before SSO.
+     */
     private suspend fun authenticate(
         client: GarminClient,
         prefs: AppSettings,
