@@ -106,6 +106,7 @@ class FitParserTest {
                     Field(83, 2, 4),
                     Field(85, 2, 4),
                     Field(108, 2, 4),
+                    Field(84, 2, 4),
                 ),
             )
             data(0) {
@@ -117,6 +118,7 @@ class FitParserTest {
                 u16(850)
                 u16(11200)
                 u16(2450)
+                u16(4950)
             }
             data(0) {
                 u32(start + 10)
@@ -127,6 +129,7 @@ class FitParserTest {
                 u16(820)
                 u16(11000)
                 u16(2500)
+                u16(5080)
             }
             definition(
                 local = 1,
@@ -173,6 +176,8 @@ class FitParserTest {
         assertEquals(8.5, detail.track[0].verticalRatio!!, 0.01)
         assertEquals(1120.0, detail.track[0].stepLengthMm!!, 0.01)
         assertEquals(24.5, detail.track[0].respirationRate!!, 0.01)
+        assertEquals(49.5, detail.track[0].stanceTimeBalancePercent!!, 0.01)
+        assertEquals(50.8, detail.track[1].stanceTimeBalancePercent!!, 0.01)
         assertEquals(185.0, detail.activity.maxCadence)
         assertEquals(42.0, detail.activity.elevationLossMeters)
         assertEquals(3.2, detail.activity.aerobicTrainingEffect!!, 0.01)

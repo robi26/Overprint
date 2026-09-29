@@ -83,6 +83,7 @@ data class TrackPointEntity(
     val stepLengthMm: Double? = null,
     val leftRightBalancePercent: Double? = null,
     val respirationRate: Double? = null,
+    val stanceTimeBalancePercent: Double? = null,
 )
 
 @Entity(
@@ -205,7 +206,7 @@ interface LapDao {
         ActivityEntity::class, TrackPointEntity::class, LapEntity::class,
         DailyHealthEntity::class, HealthSampleEntity::class, HealthReloadEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -313,5 +314,11 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
             )
             """.trimIndent(),
         )
+    }
+}
+
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE track_points ADD COLUMN stanceTimeBalancePercent REAL")
     }
 }

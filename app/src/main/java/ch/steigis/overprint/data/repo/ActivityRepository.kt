@@ -540,7 +540,7 @@ private fun TrackPointEntity.toModel() = TrackPoint(
     activityId, timestampMillis, elapsedSeconds, latitude, longitude, altitudeMeters,
     distanceMeters, speedMps, heartRate, cadence, power, gradePercent, temperatureC,
     verticalOscillationMm, stanceTimeMs, verticalRatio, stepLengthMm, leftRightBalancePercent,
-    respirationRate,
+    respirationRate, stanceTimeBalancePercent,
 )
 
 private fun TrackPoint.toEntity() = TrackPointEntity(
@@ -563,6 +563,7 @@ private fun TrackPoint.toEntity() = TrackPointEntity(
     stepLengthMm = stepLengthMm,
     leftRightBalancePercent = leftRightBalancePercent,
     respirationRate = respirationRate,
+    stanceTimeBalancePercent = stanceTimeBalancePercent,
 )
 
 private fun LapEntity.toModel() = sanitizeLap(

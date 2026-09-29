@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import ch.steigis.overprint.domain.format.Formatters
 import ch.steigis.overprint.domain.model.Activity
 import ch.steigis.overprint.domain.model.ActivityDetail
+import ch.steigis.overprint.domain.model.ActivityType
 import ch.steigis.overprint.domain.model.ChartMetric
 import ch.steigis.overprint.domain.model.TrackPoint
 import ch.steigis.overprint.domain.model.chartValue
@@ -31,12 +32,18 @@ import ch.steigis.overprint.ui.components.TrackChart
 @Composable
 fun ExtraMetricDiagrams(detail: ActivityDetail, fmt: Formatters) {
     val act = detail.activity
-    val extraSeries = ChartMetric.entries.filter { !it.isCore && detail.track.count { p -> p.chartValue(it) != null } >= 2 }
+    val running = act.type == ActivityType.RUNNING
+    val dotMetrics = RunningDynamicsMetrics.filter { m ->
+        (m != ChartMetric.CADENCE || running) && hasDotData(detail.track, m, fmt.metric)
+    }
+    val extraSeries = ChartMetric.entries.filter {
+        !it.isCore && it !in RunningDynamicsMetrics && detail.track.count { p -> p.chartValue(it) != null } >= 2
+    }
     val rightPct = act.avgRightBalancePercent(detail.track)
     val showElev = (act.elevationGainMeters ?: 0.0) > 0.5 || (act.elevationLossMeters ?: 0.0) > 0.5
     val showTe = act.aerobicTrainingEffect != null || act.anaerobicTrainingEffect != null
     val showIf = act.intensityFactor != null || act.trainingStressScore != null
-    if (extraSeries.isEmpty() && rightPct == null && !showElev && !showTe && !showIf) return
+    if (dotMetrics.isEmpty() && extraSeries.isEmpty() && rightPct == null && !showElev && !showTe && !showIf) return
 
     if (showElev) {
         val gain = act.elevationGainMeters ?: 0.0
@@ -85,6 +92,9 @@ fun ExtraMetricDiagrams(detail: ActivityDetail, fmt: Formatters) {
                 rightColor = Color(0xFFE24B4B),
             )
         }
+    }
+    dotMetrics.forEach { metric ->
+        RunningDynamicsCard(metric, detail.track, running, fmt)
     }
     extraSeries.forEach { metric ->
         ChartCard(title = metric.title()) {

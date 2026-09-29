@@ -120,6 +120,7 @@ object FitParser {
                 stepLengthMm = r.stepLengthMm,
                 leftRightBalancePercent = r.leftRightBalancePercent,
                 respirationRate = r.respirationRate,
+                stanceTimeBalancePercent = r.stanceTimeBalancePercent,
             )
         }.let { StatsEngine.enrichTrack(sanitizeFitUnits(it)) }
 
@@ -240,6 +241,7 @@ object FitParser {
                     stepLengthMm = values[85]?.div(10.0),
                     leftRightBalancePercent = leftRightBalancePercent(values[30] ?: values[54], scaled100 = false),
                     respirationRate = values[108]?.div(100.0) ?: values[99],
+                    stanceTimeBalancePercent = values[84]?.div(100.0)?.takeIf { it in 30.0..70.0 },
                 )
             }
             19 -> laps += RawLap(
@@ -458,6 +460,7 @@ object FitParser {
         val stepLengthMm: Double? = null,
         val leftRightBalancePercent: Double? = null,
         val respirationRate: Double? = null,
+        val stanceTimeBalancePercent: Double? = null,
     )
     private data class RawLap(
         val start: Long?,

@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PointMode
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -323,31 +324,11 @@ fun TrackChart(
                     .clipToBounds()
                     .pointerInput(trackKey) {
                         detectTransformGestures { centroid, pan, zoom, _ ->
-                            val w = size.width.toFloat().coerceAtLeast(1f)
-                            val start = startState.value
-                            val end = endState.value
-                            val span = (end - start).coerceIn(0.05f, 1f)
-                            val zooming = abs(zoom - 1f) > 0.001f
-                            var newSpan = if (zooming) (span / zoom).coerceIn(0.05f, 1f) else span
-                            val focus = (centroid.x / w).coerceIn(0f, 1f)
-                            val focusX = start + span * focus
-                            var nextStart = focusX - newSpan * focus
-                            var nextEnd = nextStart + newSpan
-                            if (newSpan < 0.999f) {
-                                val panFrac = -pan.x / w * newSpan
-                                nextStart += panFrac
-                                nextEnd += panFrac
-                            }
-                            if (nextStart < 0f) {
-                                nextEnd -= nextStart
-                                nextStart = 0f
-                            }
-                            if (nextEnd > 1f) {
-                                nextStart -= nextEnd - 1f
-                                nextEnd = 1f
-                            }
-                            viewStart = nextStart.coerceIn(0f, 0.95f)
-                            viewEnd = nextEnd.coerceIn(viewStart + 0.05f, 1f)
+                            val (start, end) = zoomWindow(
+                                startState.value, endState.value, centroid.x, size.width.toFloat(), pan.x, zoom,
+                            )
+                            viewStart = start
+                            viewEnd = end
                         }
                     }
                     .pointerInput(visible, minX, xSpan) {
@@ -457,6 +438,168 @@ fun TrackChart(
     }
 }
 
+/** Pinch/pan maths shared by the zoomable track charts; fractions of the full x range. */
+private fun zoomWindow(
+    start: Float,
+    end: Float,
+    focusPx: Float,
+    widthPx: Float,
+    panPx: Float,
+    zoom: Float,
+): Pair<Float, Float> {
+    val w = widthPx.coerceAtLeast(1f)
+    val span = (end - start).coerceIn(0.05f, 1f)
+    val zooming = abs(zoom - 1f) > 0.001f
+    val newSpan = if (zooming) (span / zoom).coerceIn(0.05f, 1f) else span
+    val focus = (focusPx / w).coerceIn(0f, 1f)
+    val focusX = start + span * focus
+    var nextStart = focusX - newSpan * focus
+    var nextEnd = nextStart + newSpan
+    if (newSpan < 0.999f) {
+        val panFrac = -panPx / w * newSpan
+        nextStart += panFrac
+        nextEnd += panFrac
+    }
+    if (nextStart < 0f) {
+        nextEnd -= nextStart
+        nextStart = 0f
+    }
+    if (nextEnd > 1f) {
+        nextStart -= nextEnd - 1f
+        nextEnd = 1f
+    }
+    val clampedStart = nextStart.coerceIn(0f, 0.95f)
+    return clampedStart to nextEnd.coerceIn(clampedStart + 0.05f, 1f)
+}
+
+/**
+ * Scatter of per-sample values over activity time (x in seconds), one dot per sample,
+ * coloured by [dotColor], with an optional dashed average line.
+ */
+@Composable
+fun DotChart(
+    points: List<Pair<Double, Double>>,
+    xRange: ClosedFloatingPointRange<Double>,
+    ticks: List<Double>,
+    dotColor: (Double) -> Color,
+    tickLabel: (Double) -> String,
+    valueLabel: (Double) -> String,
+    modifier: Modifier = Modifier,
+    average: Double? = null,
+) {
+    if (points.size < 2 || ticks.size < 2) {
+        ChartEmpty()
+        return
+    }
+    val groups = remember(points) { points.groupBy { dotColor(it.second) } }
+    var viewStart by remember(points) { mutableStateOf(0f) }
+    var viewEnd by remember(points) { mutableStateOf(1f) }
+    var selected by remember(points) { mutableStateOf<Pair<Double, Double>?>(null) }
+    val startState = rememberUpdatedState(viewStart)
+    val endState = rememberUpdatedState(viewEnd)
+    val fullSpan = (xRange.endInclusive - xRange.start).coerceAtLeast(1e-3)
+    val x0 = xRange.start + fullSpan * viewStart
+    val xSpan = (fullSpan * (viewEnd - viewStart)).coerceAtLeast(1e-3)
+    val lo = ticks.first()
+    val hi = ticks.last()
+    val colors = MaterialTheme.colorScheme
+    val grid = colors.outline.copy(alpha = 0.45f)
+    val cursor = colors.onSurface
+
+    Column(modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().height(200.dp)) {
+            AxisLabels(ticks.reversed().map(tickLabel))
+            Canvas(
+                Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .clipToBounds()
+                    .pointerInput(points) {
+                        detectTransformGestures { centroid, pan, zoom, _ ->
+                            val (start, end) = zoomWindow(
+                                startState.value, endState.value, centroid.x, size.width.toFloat(), pan.x, zoom,
+                            )
+                            viewStart = start
+                            viewEnd = end
+                        }
+                    }
+                    .pointerInput(points, x0, xSpan) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                viewStart = 0f
+                                viewEnd = 1f
+                                selected = null
+                            },
+                            onTap = { offset ->
+                                val x = x0 + (offset.x / size.width).coerceIn(0f, 1f) * xSpan
+                                selected = nearest(points, x)
+                            },
+                        )
+                    },
+            ) {
+                ticks.forEach { v ->
+                    val y = yPos(v, lo, hi, size.height)
+                    drawLine(grid, Offset(0f, y), Offset(size.width, y), 1.dp.toPx())
+                }
+                val x1 = x0 + xSpan
+                groups.forEach { (color, group) ->
+                    val offsets = group.mapNotNull { (x, y) ->
+                        if (x < x0 || x > x1) null
+                        else Offset(((x - x0) / xSpan * size.width).toFloat(), yPos(y, lo, hi, size.height))
+                    }
+                    drawPoints(offsets, PointMode.Points, color, strokeWidth = 5.dp.toPx(), cap = StrokeCap.Round)
+                }
+                if (average != null && average in lo..hi) {
+                    val y = yPos(average, lo, hi, size.height)
+                    drawLine(
+                        cursor.copy(alpha = 0.85f),
+                        Offset(0f, y),
+                        Offset(size.width, y),
+                        1.5.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx())),
+                    )
+                }
+                selected?.let { (x, y) ->
+                    val px = ((x - x0) / xSpan * size.width).toFloat()
+                    val py = yPos(y, lo, hi, size.height)
+                    drawLine(cursor.copy(alpha = 0.35f), Offset(px, 0f), Offset(px, size.height), 1.5.dp.toPx())
+                    drawCircle(cursor, 5.dp.toPx(), Offset(px, py))
+                    drawCircle(dotColor(y), 3.dp.toPx(), Offset(px, py))
+                }
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(start = 46.dp, top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            (0..4).forEach { i ->
+                Text(
+                    clockLabel(x0 - xRange.start + xSpan * i / 4.0),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+        Text(
+            selected?.let { (x, y) -> "${clockLabel(x - xRange.start)} · ${valueLabel(y)}" }
+                ?: if (viewEnd - viewStart < 0.999f) "Pinch to zoom · double-tap to reset" else "Pinch to zoom · tap for values",
+            Modifier.padding(start = 46.dp, top = 6.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.onSurfaceVariant.copy(alpha = 0.8f),
+        )
+    }
+}
+
+private fun clockLabel(seconds: Double): String {
+    val total = seconds.roundToInt().coerceAtLeast(0)
+    val h = total / 3600
+    val m = total % 3600 / 60
+    val s = total % 60
+    return if (h > 0) String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+    else String.format(Locale.US, "%d:%02d", m, s)
+}
+
 @Composable
 private fun AxisUnit(unit: String, color: Color) {
     Text(
@@ -469,7 +612,7 @@ private fun AxisUnit(unit: String, color: Color) {
     )
 }
 
-private fun chartLineColor(metric: ChartMetric): Color = when (metric) {
+internal fun chartLineColor(metric: ChartMetric): Color = when (metric) {
     ChartMetric.HEART_RATE -> Color(0xFFE24B4B)
     ChartMetric.PACE -> Color(0xFF7C8CFF)
     ChartMetric.SPEED -> Color(0xFF3583F3)
@@ -484,6 +627,7 @@ private fun chartLineColor(metric: ChartMetric): Color = when (metric) {
     ChartMetric.GROUND_CONTACT -> Color(0xFF16A085)
     ChartMetric.VERTICAL_RATIO -> Color(0xFF7F8C8D)
     ChartMetric.BALANCE -> Color(0xFF8E44AD)
+    ChartMetric.GCT_BALANCE -> Color(0xFF6C5CE7)
 }
 
 private fun niceAxisTicks(series: List<Pair<Double, Double>>, metric: ChartMetric): List<Double> {
@@ -1094,7 +1238,7 @@ internal fun niceMax(raw: Double): Double {
     return nice * mag
 }
 
-private fun axisTicks(minV: Double, maxV: Double, count: Int, clampZero: Boolean = false): List<Double> {
+internal fun axisTicks(minV: Double, maxV: Double, count: Int, clampZero: Boolean = false): List<Double> {
     val lo = if (clampZero) minV.coerceAtLeast(0.0) else minV
     val hi = maxV.coerceAtLeast(lo + 1e-6)
     if (hi <= lo) return listOf(lo)

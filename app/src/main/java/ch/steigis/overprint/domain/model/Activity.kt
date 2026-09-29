@@ -103,6 +103,7 @@ data class TrackPoint(
     val stepLengthMm: Double? = null,
     val leftRightBalancePercent: Double? = null,
     val respirationRate: Double? = null,
+    val stanceTimeBalancePercent: Double? = null,
 )
 
 data class Lap(
