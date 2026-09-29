@@ -479,13 +479,18 @@ class GarminClient {
         return text
     }
 
-    suspend fun downloadFit(externalId: String): ActivityDetail = withContext(Dispatchers.IO) {
+    /** The activity's original FIT file, unzipped when Garmin serves it as an archive. */
+    suspend fun downloadFitBytes(externalId: String): ByteArray = withContext(Dispatchers.IO) {
         val bytes = getFirst(fitUrlTemplate, FIT_URLS, { fitUrlTemplate = it }) { template ->
             getBytes(template.format(externalId))
         }
-        val fit = if (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
+        if (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
             unzipFirstFit(bytes)
         } else bytes
+    }
+
+    suspend fun downloadFit(externalId: String): ActivityDetail = withContext(Dispatchers.IO) {
+        val fit = downloadFitBytes(externalId)
         FitParser.parse(fit, "garmin-$externalId", "Garmin $externalId").let { detail ->
             detail.copy(
                 activity = detail.activity.copy(

@@ -459,14 +459,7 @@ class ActivityRepository(
      * notes stay as they are.
      */
     suspend fun resyncGarminActivity(id: String, progress: (GarminSyncProgress) -> Unit = {}): ActivityDetail {
-        val existing = db.activities().byId(id)?.toModel() ?: error("Activity not found")
-        if (existing.source != DataSource.GARMIN) error("Only activities downloaded from Garmin can be re-synced")
-        val prefs = settings.settings.first()
-        if (!prefs.hasGarminCredentials) {
-            error("Enter your Garmin Connect email and password in Settings")
-        }
-        val client = GarminClient()
-        authenticate(client, prefs, progress)
+        val (existing, client) = garminClientFor(id, progress)
         progress(GarminSyncProgress(running = true, message = "Downloading ${existing.name}"))
         val fresh = client.downloadFit(existing.externalId)
         save(
@@ -483,6 +476,28 @@ class ActivityRepository(
             ),
         )
         return get(id) ?: error("Activity not found")
+    }
+
+    /** The original FIT file of a Garmin activity, straight from Garmin Connect. */
+    suspend fun garminFitFile(id: String, progress: (GarminSyncProgress) -> Unit = {}): ByteArray {
+        val (existing, client) = garminClientFor(id, progress)
+        progress(GarminSyncProgress(running = true, message = "Downloading FIT file"))
+        return client.downloadFitBytes(existing.externalId)
+    }
+
+    private suspend fun garminClientFor(
+        id: String,
+        progress: (GarminSyncProgress) -> Unit,
+    ): Pair<Activity, GarminClient> {
+        val existing = db.activities().byId(id)?.toModel() ?: error("Activity not found")
+        if (existing.source != DataSource.GARMIN) error("Only activities downloaded from Garmin are available there")
+        val prefs = settings.settings.first()
+        if (!prefs.hasGarminCredentials) {
+            error("Enter your Garmin Connect email and password in Settings")
+        }
+        val client = GarminClient()
+        authenticate(client, prefs, progress)
+        return existing to client
     }
 
     private suspend fun authenticate(

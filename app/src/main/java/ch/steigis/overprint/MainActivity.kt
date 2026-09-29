@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -18,14 +19,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +47,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -121,6 +127,13 @@ private fun OverprintNav(
     val moreRoutes = setOf("more", "heatmap", "settings")
     val showBack = route == "detail" || route == "heatmap" || route == "settings"
     var confirmDelete by remember { mutableStateOf(false) }
+    var detailMenu by remember { mutableStateOf(false) }
+    var fitExportId by rememberSaveable { mutableStateOf<String?>(null) }
+    val fitSaver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+        val id = fitExportId
+        fitExportId = null
+        if (uri != null && id != null) viewModel.exportFit(id, uri)
+    }
     KeepAwakeWhileSyncing(state.garminSync.running)
 
     Scaffold(
@@ -177,21 +190,49 @@ private fun OverprintNav(
                         }
                     }
                     val selected = state.selected?.activity
-                    if (route == "detail" && selected != null && selected.source == DataSource.GARMIN) {
-                        IconButton(
-                            onClick = { viewModel.resyncActivity(selected.id) },
-                            enabled = !state.garminSync.running,
-                        ) {
-                            if (state.garminSync.running) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Outlined.CloudDownload, contentDescription = "Re-sync from Garmin")
-                            }
+                    if (route == "detail" && selected != null) {
+                        val fromGarmin = selected.source == DataSource.GARMIN
+                        if (state.garminSync.running) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.padding(horizontal = 8.dp).size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
                         }
-                    }
-                    if (route == "detail" && state.selected != null) {
-                        IconButton(onClick = { confirmDelete = true }) {
-                            Icon(Icons.Outlined.Delete, contentDescription = "Delete activity")
+                        Box {
+                            IconButton(onClick = { detailMenu = true }) {
+                                Icon(Icons.Outlined.MoreVert, contentDescription = "More actions")
+                            }
+                            DropdownMenu(expanded = detailMenu, onDismissRequest = { detailMenu = false }) {
+                                if (fromGarmin) {
+                                    DropdownMenuItem(
+                                        text = { Text("Re-sync from Garmin") },
+                                        leadingIcon = { Icon(Icons.Outlined.Sync, contentDescription = null) },
+                                        enabled = !state.garminSync.running,
+                                        onClick = {
+                                            detailMenu = false
+                                            viewModel.resyncActivity(selected.id)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Download FIT file") },
+                                        leadingIcon = { Icon(Icons.Outlined.FileDownload, contentDescription = null) },
+                                        enabled = !state.garminSync.running,
+                                        onClick = {
+                                            detailMenu = false
+                                            fitExportId = selected.id
+                                            fitSaver.launch(fitFileName(selected))
+                                        },
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Delete activity") },
+                                    leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null) },
+                                    onClick = {
+                                        detailMenu = false
+                                        confirmDelete = true
+                                    },
+                                )
+                            }
                         }
                     }
                 },
@@ -234,13 +275,13 @@ private fun OverprintNav(
             }
         },
     ) { padding ->
-        state.resyncError?.let { message ->
+        state.actionError?.let { error ->
             AlertDialog(
-                onDismissRequest = viewModel::dismissResyncError,
-                title = { Text("Re-sync failed") },
-                text = { Text(message) },
+                onDismissRequest = viewModel::dismissActionError,
+                title = { Text(error.title) },
+                text = { Text(error.message) },
                 confirmButton = {
-                    TextButton(onClick = viewModel::dismissResyncError) { Text("OK") }
+                    TextButton(onClick = viewModel::dismissActionError) { Text("OK") }
                 },
             )
         }
@@ -399,4 +440,13 @@ private fun KeepAwakeWhileSyncing(enabled: Boolean) {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
+}
+
+/** "Morning Run 2026-09-28.fit", without characters file systems reject. */
+private fun fitFileName(activity: ch.steigis.overprint.domain.model.Activity): String {
+    val date = java.time.Instant.ofEpochMilli(activity.startTimeMillis)
+        .atZone(java.time.ZoneId.systemDefault())
+        .toLocalDate()
+    val name = activity.name.replace(Regex("[\\\\/:*?\"<>|]"), " ").trim().ifEmpty { "Activity" }
+    return "$name $date.fit"
 }
